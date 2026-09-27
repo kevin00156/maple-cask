@@ -78,9 +78,14 @@ install_runner() {
     [ -d "$RUNNERS/$name" ] && return
     mkdir -p "$dl" "$RUNNERS"
     echo "== 下載 $name"
-    curl -fL --progress-bar -o "$dl/$name.tar.xz" "$2"
-    curl -fsSL -o "$dl/SHA256SUMS" "$3"
-    (cd "$dl" && grep -F "  $name.tar.xz" SHA256SUMS | sha256sum -c -) || die "校驗失敗,什麼都沒改"
+    # GitHub Release 的 CDN 在台灣常只有幾十 KB/s、還會斷線:斷了自己接,Ctrl-C 後重跑也從 .part 接著下
+    if [ ! -f "$dl/$name.tar.xz" ]; then
+        curl -fL --progress-bar --retry 10 --retry-all-errors -C - -o "$dl/$name.tar.xz.part" "$2"
+        mv "$dl/$name.tar.xz.part" "$dl/$name.tar.xz"
+    fi
+    curl -fsSL --retry 5 --retry-all-errors -o "$dl/SHA256SUMS" "$3"
+    (cd "$dl" && grep -F "  $name.tar.xz" SHA256SUMS | sha256sum -c -) ||
+        { rm -f "$dl/$name.tar.xz"; die "校驗失敗,什麼都沒改(壞檔已刪,重跑會重新下載)"; }
     rm -rf "$RUNNERS/$name.tmp"
     mkdir "$RUNNERS/$name.tmp"
     tar -C "$RUNNERS/$name.tmp" --strip-components=1 -xJf "$dl/$name.tar.xz"

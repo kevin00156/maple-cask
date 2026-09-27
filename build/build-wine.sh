@@ -70,7 +70,14 @@ mkdir -p "$OBJ" && cd "$OBJ"
 "$SRC/configure" --enable-archs=i386,x86_64 --disable-tests --prefix="$OUT"
 make -j"$JOBS"
 case $OUT in */out) rm -rf "$OUT" ;; *) echo "OUT 路徑不對:$OUT"; exit 1 ;; esac
-make install
+# install-lib = 只裝執行要的;install 會多帶 include/、.a import lib、winegcc 等開發用的東西(約 160MB)
+make install-lib
+# 預設是 -g 編的:不剝 tarball 296MB,剝完(加上第 6 步的 xz -9)72MB。GitHub Release 的 CDN 在台灣常只有幾十 KB/s。
+# 要 debug 符號就自己 build、跳過這步。strip 碰到 shell script / 資料檔會報錯並原樣跳過,所以不看它的錯誤。
+find "$OUT/bin" "$OUT/lib/wine/x86_64-unix" -type f -exec strip --strip-debug {} + 2>/dev/null || true
+find "$OUT/lib/wine/x86_64-windows" -type f -exec x86_64-w64-mingw32-strip --strip-debug {} + 2>/dev/null || true
+find "$OUT/lib/wine/i386-windows" -type f -exec i686-w64-mingw32-strip --strip-debug {} + 2>/dev/null || true
+du -sh "$OUT"
 
 echo "== 4. DXVK + vkd3d-proton(取自 $GE_VERSION)=="
 if [ ! -d "$GE_DIR/files/lib/wine/dxvk" ]; then
@@ -79,7 +86,7 @@ if [ ! -d "$GE_DIR/files/lib/wine/dxvk" ]; then
     name=$GE_VERSION-x86_64.tar.gz
     base=https://github.com/GloriousEggroll/proton-ge-custom/releases/download/$GE_VERSION
     if [ ! -f "$BUILD_DIR/ge/$name" ]; then
-        curl -fL --retry 3 -o "$BUILD_DIR/ge/$name.part" "$base/$name"
+        curl -fL --retry 10 --retry-all-errors -C - -o "$BUILD_DIR/ge/$name.part" "$base/$name"   # 534MB、GitHub CDN 會斷
         mv "$BUILD_DIR/ge/$name.part" "$BUILD_DIR/ge/$name"
     fi
     curl -fsL --retry 3 "$base/$GE_VERSION-x86_64.sha512sum" | (cd "$BUILD_DIR/ge" && sha512sum -c -)
@@ -104,6 +111,6 @@ cp "$REPO"/patches/[0-9]*.patch "$OUT/patches/"
 echo "wine-$WINE_VERSION (dl.winehq.org) sha256=$WINE_SHA256" > "$OUT/patches/BASE"
 cp "$REPO/LICENSE" "$OUT/LICENSE"
 NAME=maplestory-tw-wine-$VERSION
-XZ_OPT=-T0 tar -C "$BUILD_DIR" --transform "s,^out,$NAME," -cJf "$BUILD_DIR/$NAME.tar.xz" out
+XZ_OPT="-T0 -9" tar -C "$BUILD_DIR" --transform "s,^out,$NAME," -cJf "$BUILD_DIR/$NAME.tar.xz" out
 sha256sum "$BUILD_DIR/$NAME.tar.xz"
 echo "完成:WINE_ROOT=$OUT"

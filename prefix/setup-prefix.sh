@@ -25,7 +25,9 @@ SYS32=$WINEPREFIX/drive_c/windows/system32
 WOW64=$WINEPREFIX/drive_c/windows/syswow64
 
 echo "== 1. prefix =="
-"$WINE" wineboot -u >/dev/null 2>&1
+# wine 只建 prefix 這一層;上一層不存在(新機:~/.local/share/maplestory-tw 還沒有)它會直接失敗
+mkdir -p "$WINEPREFIX"
+"$WINE" wineboot -u >/dev/null      # stderr 留著:這步失敗時那是唯一的線索
 "$WINESERVER" -w
 acp=$(grep -m1 '^"ACP"' "$WINEPREFIX/system.reg" || true)
 case $acp in *950*) echo "   ACP=950 OK" ;;
