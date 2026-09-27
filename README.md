@@ -1,3 +1,5 @@
+<img src="assets/icon.svg" width="128" align="right" alt="">
+
 # MapleCask
 
 maple-cask(楓木桶)—— 讓台版新楓之谷在 Linux 上跑起來。名字取自楓木桶熟成的加拿大威士忌:甜,但是烈。
