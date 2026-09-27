@@ -43,6 +43,11 @@ Releases 上的 tarball 就是 `build/build-wine.sh` 在 GitHub Actions(ubuntu-2
 推 `v*` tag(major.minor.patch,例如 `v0.0.2`)會觸發 [`.github/workflows/release.yml`](../.github/workflows/release.yml),
 build 完連同 `SHA256SUMS` 掛到該版的 Release。在 Actions 頁手動 Run workflow 則只 build、不發版,產物放在 workflow artifact。
 
+發完 Release 會接著跑 [`mirror.yml`](../.github/workflows/mirror.yml),把同一份檔案放到 Cloudflare R2
+(`https://dl.qazsskevin.org/<tag>/<檔名>`):GitHub Release 的 CDN 在台灣常只有幾十 KB/s。`maple update` 先試鏡像,
+不通或校驗不符才回 GitHub;校驗碼只信 GitHub 上那份 `SHA256SUMS`。設 `MAPLE_MIRROR=`(空字串)就只用 GitHub。
+舊版本要補鏡像:Actions 頁手動跑 mirror、填 tag。
+
 ## 檔案放哪
 repo 只放腳本、patch、文件;大檔預設在 `~/.local/share/maplestory-tw/`(可用 `MAPLE_DATA` 改):
 ```

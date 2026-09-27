@@ -1,0 +1,56 @@
+# 把某個 Release 的檔案鏡像到 Cloudflare R2(https://dl.qazsskevin.org/<tag>/<檔名>)。
+# GitHub Release 的 CDN 在台灣常只有幾十 KB/s;tools/maple-update 先試鏡像,不通或校驗不符才回 GitHub。
+# 校驗碼只信 GitHub 那份 SHA256SUMS,所以鏡像就算被換掉也只會讓下載變慢,不會裝到壞檔。
+#
+# release.yml 發完 Release 會呼叫這裡;補鏡像舊版本就從 Actions 頁手動觸發、填 tag。
+# 需要 secrets:R2_ACCESS_KEY_ID、R2_SECRET_ACCESS_KEY(只對 bucket maple-cask 有 Object Read & Write)、R2_ACCOUNT_ID。
+name: mirror
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 要鏡像的 Release tag(例如 v0.0.2)
+        required: true
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  r2:
+    runs-on: ubuntu-24.04
+    env:
+      TAG: ${{ inputs.tag }}
+      MIRROR: https://dl.qazsskevin.org
+    steps:
+      - name: 從 Release 拿檔並校驗
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -D dist
+          cd dist && sha256sum -c SHA256SUMS
+
+      - name: 上傳到 R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          # aws cli 新版預設帶的 checksum 標頭 R2 不一定吃;照 Cloudflare 文件關掉
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+          ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+        run: |
+          # 檔名帶版本、內容永不改 → 讓 Cloudflare 邊緣放心快取
+          aws s3 cp dist/ "s3://maple-cask/$TAG/" --recursive --endpoint-url "$ENDPOINT" \
+            --cache-control "public, max-age=31536000, immutable"
+
+      - name: 從鏡像讀回來驗
+        run: |
+          mkdir back && cd back
+          for f in $(cd ../dist && ls); do curl -fsSLO --retry 5 "$MIRROR/$TAG/$f"; done
+          sha256sum -c ../dist/SHA256SUMS

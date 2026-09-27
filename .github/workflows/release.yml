@@ -57,3 +57,12 @@ jobs:
           path: |
             ${{ runner.temp }}/build/maplestory-tw-wine-*.tar.xz
             ${{ runner.temp }}/build/SHA256SUMS
+
+  # Release 發完才鏡像:鏡像的檔案就是 Release 上那份(順便驗過一次)
+  mirror:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    uses: ./.github/workflows/mirror.yml
+    with:
+      tag: ${{ github.ref_name }}
+    secrets: inherit

@@ -18,6 +18,9 @@ RUNNERS=${MAPLE_DATA:-${XDG_DATA_HOME:-$HOME/.local/share}/maplestory-tw}/runner
 CACHE=${XDG_CACHE_HOME:-$HOME/.cache}/maplestory-tw
 STAMP=$CACHE/update-check
 DEFAULT_SLUG=kevin00156/maple-cask
+# runner 的鏡像(Cloudflare R2,CI 發版時跟 Release 放同一份)。GitHub Release 的 CDN 在台灣常只有幾十 KB/s。
+# 路徑 = <鏡像>/<tag>/<檔名>;設成空字串就只用 GitHub。fork 的檔名在這裡找不到,會自動退回 GitHub。
+MIRROR=${MAPLE_MIRROR-https://dl.qazsskevin.org}
 
 die() { echo "$*" >&2; exit 1; }
 
@@ -40,7 +43,7 @@ busy() {
     return 1
 }
 
-# 最新 Release:印「tag tarball檔名 tarball網址 SHA256SUMS網址」。用 Release 不用 git tag:
+# 最新 Release:印「tag tarball檔名 tarball網址 SHA256SUMS網址 tarball大小(MB)」。用 Release 不用 git tag:
 # tag 推上去後 CI 還要跑 40 分鐘 tarball 才出現。fork 的人就追自己 fork 的 Release。
 latest() {
     local slug
@@ -49,8 +52,9 @@ latest() {
 import json, sys
 r = json.load(sys.stdin)
 url = {a["name"]: a["browser_download_url"] for a in r["assets"]}
+mb = {a["name"]: round(a["size"] / 1e6) for a in r["assets"]}
 tar = next(n for n in url if n.endswith(".tar.xz"))
-print(r["tag_name"], tar, url[tar], url["SHA256SUMS"])'
+print(r["tag_name"], tar, url[tar], url["SHA256SUMS"], mb[tar])'
 }
 
 # 腳本能 fast-forward 到 $1 就什麼都不印;不能就印原因
@@ -72,20 +76,27 @@ runner_why() {
     return 0
 }
 
-# 下載、校驗、解到 runners/$1。先解進 .tmp 再改名:中途失敗不會留下半套 runner
+# 下載、校驗、解到 runners/$1。來源依序是鏡像、GitHub;校驗碼只信 GitHub 的 SHA256SUMS,
+# 鏡像不通或內容不符就換下一個來源。先解進 .tmp 再改名:中途失敗不會留下半套 runner
 install_runner() {
-    local name=$1 dl=$CACHE/download
+    local name=$1 tarurl=$2 sumsurl=$3 tag=$4 mb=$5 dl=$CACHE/download url
+    local f=$dl/$name.tar.xz
     [ -d "$RUNNERS/$name" ] && return
     mkdir -p "$dl" "$RUNNERS"
-    echo "== 下載 $name"
-    # GitHub Release 的 CDN 在台灣常只有幾十 KB/s、還會斷線:斷了自己接,Ctrl-C 後重跑也從 .part 接著下
-    if [ ! -f "$dl/$name.tar.xz" ]; then
-        curl -fL --progress-bar --retry 10 --retry-all-errors -C - -o "$dl/$name.tar.xz.part" "$2"
-        mv "$dl/$name.tar.xz.part" "$dl/$name.tar.xz"
-    fi
-    curl -fsSL --retry 5 --retry-all-errors -o "$dl/SHA256SUMS" "$3"
-    (cd "$dl" && grep -F "  $name.tar.xz" SHA256SUMS | sha256sum -c -) ||
-        { rm -f "$dl/$name.tar.xz"; die "校驗失敗,什麼都沒改(壞檔已刪,重跑會重新下載)"; }
+    curl -fsSL --retry 5 --retry-all-errors -o "$dl/SHA256SUMS" "$sumsurl"
+    # 鏡像先問一聲有沒有這個檔:沒有就別排進去(--retry-all-errors 會把 404 也重試 10 輪)
+    local urls=("$tarurl")
+    [ -n "$MIRROR" ] && curl -fsI --max-time 10 -o /dev/null "$MIRROR/$tag/$name.tar.xz" &&
+        urls=("$MIRROR/$tag/$name.tar.xz" "$tarurl")
+    for url in "${urls[@]}"; do
+        echo "== 下載 wine runner $name(${mb}MB,來源 $(cut -d/ -f3 <<<"$url"))"
+        # 斷了自己接;Ctrl-C 後重跑也從 .part 接著下(鏡像與 GitHub 是同一份位元組,.part 可以混著接)
+        [ -f "$f" ] || { curl -fL --progress-bar --retry 10 --retry-all-errors -C - -o "$f.part" "$url" && mv "$f.part" "$f"; } || continue
+        (cd "$dl" && grep -F "  $name.tar.xz" SHA256SUMS | sha256sum -c --quiet -) && break
+        echo "   校驗不符,丟掉這份"
+        rm -f "$f" "$f.part"
+    done
+    [ -f "$f" ] || die "下載失敗,什麼都沒改(重跑會從斷點接著下)"
     rm -rf "$RUNNERS/$name.tmp"
     mkdir "$RUNNERS/$name.tmp"
     tar -C "$RUNNERS/$name.tmp" --strip-components=1 -xJf "$dl/$name.tar.xz"
@@ -128,10 +139,10 @@ check() {
 }
 
 update() {
-    local tag tar tarurl sumsurl name swhy rwhy old
+    local tag tar tarurl sumsurl mb name swhy rwhy old
     [ -f "$MAIN_ENV" ] || die "沒有 $MAIN_ENV:先從 env.example 複製過去填好(見 README)"
     busy && die "遊戲或 wineserver 還在跑,先 maple stop(多開的每一組都要)"
-    read -r tag tar tarurl sumsurl < <(latest) || true
+    read -r tag tar tarurl sumsurl mb < <(latest) || true
     [ -n "${sumsurl:-}" ] || die "查不到最新 Release(沒網路?)"
     name=${tar%.tar.xz}
     swhy=$(scripts_why "$tag")
@@ -142,7 +153,7 @@ update() {
     rm -f "$STAMP"
     [ -z "$swhy" ] || [ -z "$rwhy" ] || return 0
 
-    [ -n "$rwhy" ] || install_runner "$name" "$tarurl" "$sumsurl"
+    [ -n "$rwhy" ] || install_runner "$name" "$tarurl" "$sumsurl" "$tag" "$mb"
     if [ -z "$swhy" ]; then
         old=$(git -C "$REPO" rev-parse HEAD)
         git -C "$REPO" merge -q --ff-only "$tag"
