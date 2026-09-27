@@ -35,7 +35,7 @@ jobs:
           gh release download "$TAG" -R "$GITHUB_REPOSITORY" -D dist
           cd dist && sha256sum -c SHA256SUMS
 
-      - name: 上傳到 R2
+      - name: 上傳到 R2,再讀回來驗
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
@@ -48,9 +48,8 @@ jobs:
           # 檔名帶版本、內容永不改 → 讓 Cloudflare 邊緣放心快取
           aws s3 cp dist/ "s3://maple-cask/$TAG/" --recursive --endpoint-url "$ENDPOINT" \
             --cache-control "public, max-age=31536000, immutable"
-
-      - name: 從鏡像讀回來驗
-        run: |
-          mkdir back && cd back
-          for f in $(cd ../dist && ls); do curl -fsSLO --retry 5 "$MIRROR/$TAG/$f"; done
-          sha256sum -c ../dist/SHA256SUMS
+          # 讀回來走 S3 API 而不是 $MIRROR:公開網域對 GitHub Actions 的機房 IP 回 403(Cloudflare 擋 bot),
+          # 家用網路正常。公開網址能不能下載由新機驗收(VM)確認。
+          aws s3 cp "s3://maple-cask/$TAG/" back/ --recursive --endpoint-url "$ENDPOINT"
+          cd back && sha256sum -c ../dist/SHA256SUMS
+          echo "鏡像:$MIRROR/$TAG/"
