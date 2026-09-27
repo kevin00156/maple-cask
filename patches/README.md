@@ -16,6 +16,6 @@
 | 0010 | `win32u` IME 通知繞過被 subclass 的 IME 視窗 | 遊戲內打中文(遊戲換掉了 Default IME 視窗的 wndproc) | 可考慮送上游 |
 | 0011 | `imm32` IME UI 視窗隨 owner 死掉後重建 | 遊戲內打中文(wine bug:`imc->ui_hwnd` 指向死 handle) | **通用 bug,待送** |
 | 0012 | `winex11` 由 wineserver 做 Windows 式 auto-repeat | 綁在 Shift / Ctrl / Alt 的技能按住會連發(X server 寫死修飾鍵不 repeat) | 可考慮送上游 |
-| gamescope-0001 | gamescope 畫輸入法的 override-redirect 視窗 | 中文輸入法候選窗(選用,`build/build-gamescope.sh`) | gamescope,可考慮送 |
+| gamescope-0001 | gamescope 畫輸入法的 override-redirect 視窗(當 decoration 畫,不拿鍵盤焦點) | 中文輸入法候選窗(選用,`build/build-gamescope.sh`) | gamescope,可考慮送 |
 
 量測用的探針在 [`tools/dev/`](../tools/dev/README.md)。

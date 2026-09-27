@@ -1,15 +1,18 @@
 diff --git a/src/steamcompmgr.cpp b/src/steamcompmgr.cpp
-index 18b799e0..d7ea8026 100644
+index 18b799e0..89b001fc 100644
 --- a/src/steamcompmgr.cpp
 +++ b/src/steamcompmgr.cpp
-@@ -4193,6 +4193,26 @@ static bool is_same_app_override_decoration( steamcompmgr_win_t *candidate, stea
- 		( candidate->hwndStyleEx & uDecorationStyle ) == uDecorationStyle;
+@@ -4180,9 +4180,37 @@ static bool windows_share_app( steamcompmgr_win_t *a, steamcompmgr_win_t *b )
+ 		( a->steamAppID != 0 && a->steamAppID == b->steamAppID );
  }
  
+-static bool is_same_app_override_decoration( steamcompmgr_win_t *candidate, steamcompmgr_win_t *focus )
 +// Override-redirect windows are normally only painted when they belong to the focused app
 +// (same pid / same appid).  Input method candidate windows live in the IME daemon's own
 +// process (fcitx5, ibus), so they would never be shown inside gamescope and the user types
-+// blind.  Allow them by process name.
++// blind.  Paint them by process name -- as decorations, not in the override slot: the
++// override takes the keyboard focus, and an input method window never wants key input.
++// Moving the focus to it and back while a key is down loses that key's release in the app.
 +static gamescope::ConVar<std::string> cv_foreign_override_process_names( "foreign_override_process_names", "fcitx5,ibus-daemon,ibus-ui-gtk3",
 +	"Comma separated process names whose override-redirect windows are painted even though they do not belong to the focused app (input method candidate windows)." );
 +
@@ -26,15 +29,34 @@ index 18b799e0..d7ea8026 100644
 +	return false;
 +}
 +
- static bool is_good_override_candidate( steamcompmgr_win_t *override, steamcompmgr_win_t* focus )
++static bool is_override_decoration( steamcompmgr_win_t *candidate, steamcompmgr_win_t *focus )
  {
- 	// Some Chrome/Edge dropdowns (ie. FH5 xbox login) will automatically close themselves if you
-@@ -4208,7 +4228,7 @@ static bool is_good_override_candidate( steamcompmgr_win_t *override, steamcompm
- 	if ( is_same_app_override_decoration( override, focus ) )
+-	if ( !focus || candidate->pid == focus->pid || !windows_share_app( candidate, focus ) )
++	if ( !focus || candidate->pid == focus->pid )
++		return false;
++
++	if ( win_is_override_redirect( candidate ) && win_is_foreign_override_allowed( candidate ) )
++		return true;
++
++	if ( !windows_share_app( candidate, focus ) )
  		return false;
  
--	if ( override->pid != focus->pid && !windows_share_app( override, focus ) )
-+	if ( override->pid != focus->pid && !windows_share_app( override, focus ) && !win_is_foreign_override_allowed( override ) )
+ 	// Xalia's cross-process highlight is a non-interactive, transparent layered
+@@ -4205,7 +4233,7 @@ static bool is_good_override_candidate( steamcompmgr_win_t *override, steamcompm
+ 
+ 	// Non-interactive same-app helpers get painted as decorations instead.
+ 	// Other same-app cross-process popups still need the override's input path.
+-	if ( is_same_app_override_decoration( override, focus ) )
++	if ( is_override_decoration( override, focus ) )
  		return false;
  
- 	return override != focus && (rect.nX + rect.nWidth) > 0 && (rect.nY + rect.nHeight) > 0;
+ 	if ( override->pid != focus->pid && !windows_share_app( override, focus ) )
+@@ -4228,7 +4256,7 @@ static void pick_decoration_windows( focus_t *pFocus )
+ 	xwayland_ctx_t *pFocusCtx = pFocus->focusWindow->xwayland().ctx;
+ 	for ( steamcompmgr_win_t *w = pFocusCtx->list; w; w = w->xwayland().next )
+ 	{
+-		if ( !is_same_app_override_decoration( w, pFocus->focusWindow ) || w == pFocus->overrideWindow )
++		if ( !is_override_decoration( w, pFocus->focusWindow ) || w == pFocus->overrideWindow )
+ 			continue;
+ 
+ 		if ( w->isOverlay || w->isExternalOverlay )

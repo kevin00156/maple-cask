@@ -269,7 +269,7 @@ Ubuntu 26.04 實測;24.04 的 wayland / libdrm / libxkbcommon / pixman 低於 wl
 
 **中文輸入法在 gamescope 裡要多兩件事**(細節與證據見 known-issues):`run.sh` 會叫 fcitx5 把 XIM server
 掛到 gamescope 的巢狀 Xwayland 上(DBus `OpenX11Connection`);gamescope 本身只畫跟遊戲同 pid 的 override-redirect
-視窗,`gamescope-0001` 讓行程名是 `fcitx5` 的候選窗也被畫。候選窗會在遊戲左上角,原因也在那一節。
+視窗,`gamescope-0001` 讓行程名是 `fcitx5` 的候選窗也被畫。它是當 decoration 畫的,不拿鍵盤焦點,不然會丟按鍵的放開事件。候選窗會在遊戲左上角,原因也在那一節。
 
 順帶:gamescope 也把 Wayland 下 Xwayland fractional scaling 的問題(known-issues)一起帶走了 ——
 遊戲看到的永遠是 gamescope 給的那個解析度。

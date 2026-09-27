@@ -118,7 +118,17 @@ WebView2 需要 DirectComposition,wine 沒有實作。本專案不處理那個 G
 | 1 | gamescope 的巢狀 Xwayland 上**沒有 XIM server**(fcitx5 只註冊在桌面那個 display) | `DISPLAY=:2 xprop -root XIM_SERVERS` 沒有 atom;`:1` 是 `@server=fcitx` | `run.sh` 在 exec wine 前呼叫 fcitx5 的 DBus `OpenX11Connection $DISPLAY`。要在 wine 啟動前做:wine 只在視窗 FocusIn 時建 XIC,gamescope 裡焦點永遠不變 |
 | 2 | 遊戲 **subclass 掉 Default IME 視窗**(換掉 wndproc,IME 訊息一律丟 DefWindowProc) | `+imm`:每筆 `post_ime_update` 後有 `handle_internal_message` 的 `get_default_ime_window`(內部訊息有被撈出來、也通過 parent 檢查),但 `__wine_ime_wnd_proc` 從 WM_ACTIVATEAPP 後再沒收過任何東西,取而代之是 DefWindowProc 的 WM_IME_NOTIFY 路徑 | `patches/0010`:win32u 把 wine 私有的 `IMN_WINE_SET_COMP_STRING` 直接 dispatch 到**內建** IME class wndproc,不經過視窗現在的 wndproc。Windows 上遊戲這樣做沒事,因為 Windows 的組字結果不經過那個視窗 |
 | 3 | **wine bug**:IME UI 視窗 owned by 當時的 Default IME 視窗;遊戲砍掉 bootstrap 視窗時它跟著死,但 `imc->ui_hwnd` 沒清 | `+imm`:UI 視窗早早收到 WM_DESTROY,之後 `ime_ui_notify` 0 次 —— `__wine_ime_wnd_proc` 一直 SendMessage 到死 handle | `patches/0011`:imm32 `get_ime_ui_window()` 對 cache 的 handle 做 `IsWindow`,死了就重建。上游 10.16 同樣的碼 |
-| 4 | **gamescope 只畫跟焦點視窗同 pid / 同 appid 的 override-redirect 視窗**(`is_good_override_candidate`),fcitx5 的候選窗永遠不會被畫 | 記事本實驗:fcitx5 在巢狀 display 上確實建了候選窗且 `IsViewable`;gamescope 原始碼那條 pid 檢查 | `patches/gamescope-0001`:ConVar `foreign_override_process_names`(預設 `fcitx5,ibus-daemon,ibus-ui-gtk3`),行程名符合就放行 |
+| 4 | **gamescope 只畫跟焦點視窗同 pid / 同 appid 的 override-redirect 視窗**(`is_good_override_candidate`),fcitx5 的候選窗永遠不會被畫 | 記事本實驗:fcitx5 在巢狀 display 上確實建了候選窗且 `IsViewable`;gamescope 原始碼那條 pid 檢查 | `patches/gamescope-0001`:ConVar `foreign_override_process_names`(預設 `fcitx5,ibus-daemon,ibus-ui-gtk3`),行程名符合的 override-redirect 視窗當 **decoration** 畫(只畫、不拿鍵盤焦點)。**不能放進 override slot**,理由見下一段 |
+
+**打完中文後第一個鍵自己連發(2026-09-27 修)**:gamescope-0001 第一版是把 fcitx 的視窗放進 override slot,
+而 gamescope 會把 Wayland 鍵盤焦點交給 override(`steamcompmgr.cpp` `keyboardFocusWindow = overrideWindow ? …`)。
+fcitx 切中/英時跳出的提示框只 map 約 0.5 秒;這段時間按下的鍵,焦點切過去再切回來後,放開事件就丟了。
+wine 因此以為那個鍵一直按著,0012 開了 server 端連發,於是變成自己連發。證據是在 winex11
+`X11DRV_ProcessEvents` 的 `XFilterEvent` 前面暫時加的 trace:它記下了 X 讀進來的**每一個**按鍵事件,
+包括被 XIM 過濾掉的,但那個鍵的 KeyRelease 一次都沒出現。所以不是 fcitx/XIM 吃掉的,是根本沒送到 wine 的 X 連線。
+改成 decoration 後,提示框照樣看得到,按下/放開也成對了(實測)。
+**先修錯的兩版(留作教訓)**:在 winex11 補送「被輸入法過濾掉的 release」—— 事件根本沒進 wine,補不到。
+下次先用 trace 確認事件**有沒有進到那一層**,再去改那一層。
 
 **之前寫在這裡的兩個假設都錯了**(留作教訓):「被 `ime_hwnd == GetParent(hwnd)` 丟掉」—— 實測主視窗與 Default IME
 視窗的 owner/parent 全是 0,條件不成立;「遊戲的訊息迴圈過濾掉內部訊息」—— log 證明有撈出來。
