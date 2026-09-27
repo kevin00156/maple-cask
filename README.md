@@ -36,8 +36,8 @@ cp env.example ~/.config/maplestory-tw/env.sh && $EDITOR ~/.config/maplestory-tw
 # 2. 下載 wine runner(Releases 最新版,校驗 SHA256)並建 prefix
 tools/maple update
 
-# 3. 把 maple 放進 PATH
-ln -sf "$PWD/tools/maple" ~/.local/bin/maple
+# 3. 把 maple 放進 PATH(~/.local/bin 是這步才建的話,要重新登入 PATH 才會有它)
+mkdir -p ~/.local/bin && ln -sf "$PWD/tools/maple" ~/.local/bin/maple
 ```
 想自己編 wine,或要看得到中文輸入法的候選窗:[docs/building.md](docs/building.md)。
 
