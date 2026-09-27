@@ -1,0 +1,69 @@
+Windows Registry Editor Version 5.00
+
+; umu-protonfixes gamefixes-steam/216150.py 的等價設定(PR #597,已 merge)。
+; 來源:oldschoola/linux_maplestory 的 01/04/05/10/11 patch 合併,拿掉 GMS/Steam 專屬的
+; nxsteam/SteamConnectorHelper,補上台版的 Patcher.exe。
+
+[HKEY_CURRENT_USER\Software\Wine\X11 Driver]
+"UseTakeFocus"="N"
+"Grab"="N"
+"GrabFullscreen"="N"
+"UseLinuxInputEvents"="Y"
+
+[HKEY_CURRENT_USER\Software\Wine\DirectInput]
+"UseLinuxInputEvents"="Y"
+"KeyboardUseNonExclusive"="Y"
+"MouseUseNonExclusive"="Y"
+
+[HKEY_CURRENT_USER\Software\Wine\AppDefaults\MapleStory.exe]
+"Version"="win10"
+
+; --- 焦點:不要叫視窗管理員把遊戲設成作用中視窗(patches/0008)-----------------
+; 遊戲(主視窗與內嵌的 NxOverlay)會不斷對自己呼叫 SetForegroundWindow。
+; wine 10.16 的 winex11 每次都會送 _NET_ACTIVE_WINDOW 給 WM,而且 source 標成 pager,
+; KWin 把 pager 請求當使用者操作無條件放行 → 桌面焦點每幾秒被搶回去一次。
+; 設成 N 就回到 wine 10.0 的行為(啟動只在 wine 內部發生,不驚動 WM)。
+; 只設在這兩個 exe 底下,全域的 X11 Driver 段不要動,別的程式行為不變。
+[HKEY_CURRENT_USER\Software\Wine\AppDefaults\MapleStory.exe\X11 Driver]
+"RequestNetActiveWindow"="N"
+
+; NxOverlay 的視窗屬於哪個行程還沒查清(DwarfAxe.exe 在黑畫面階段就已經在跑),兩個都蓋
+[HKEY_CURRENT_USER\Software\Wine\AppDefaults\DwarfAxe.exe\X11 Driver]
+"RequestNetActiveWindow"="N"
+
+[HKEY_CURRENT_USER\Software\Wine\AppDefaults\Patcher.exe]
+"Version"="win10"
+
+[HKEY_CURRENT_USER\Software\Wine\Direct3D]
+"cb_access_map_w"=dword:00000001
+"CSMT"="disabled"
+
+[HKEY_LOCAL_MACHINE\Software\Classes\nxl]
+@="URL:nxl protocol"
+"URL Protocol"=""
+
+[HKEY_LOCAL_MACHINE\Software\Classes\nxl\shell\open\command]
+@="\"C:\\Nexon\\Launcher\\nexon_launcher.exe\" \"%1\""
+
+; --- 清掉舊 prefix 的每-app 虛擬桌面(2026-09-14 之前的 vdesk.reg 留下的)-------
+; "Desktop"="maple" 會讓遊戲跑在獨立的 Win32 desktop 物件上,tools/mapletype.exe 的
+; EnumWindows 跨不過去(靜默回空),自動輸入就只能退回剪貼簿。虛擬桌面已經不做了
+; (從來沒生效過,修好了又不能全螢幕),這裡負責把它清乾淨。
+; 新 prefix 上這三段都是 no-op。
+[-HKEY_CURRENT_USER\Software\Wine\AppDefaults\MapleStory.exe\Explorer\Desktops]
+
+[-HKEY_CURRENT_USER\Software\Wine\AppDefaults\MapleStory.exe\Explorer]
+
+; 全域的 Desktops 只刪我們那份食譜叫人加的 "maple",別動別的 app 的虛擬桌面
+[HKEY_CURRENT_USER\Software\Wine\Explorer\Desktops]
+"maple"=-
+
+; --- 顯示驅動釘死 x11(2026-09-16,為 Wayland 升級預留)------------------------
+; wine 10.16 的預設是 "mac,x11,wayland"(programs/explorer/desktop.c:43),Plasma Wayland
+; 一定給 DISPLAY(XWayland),所以預設仍會挑 winex11 —— 但這遊戲的黑畫面病灶還沒定位,
+; 不能讓「哪個 wine 版本改了預設順序」變成另一個變數。本專案所有量測(desktop 隔離、
+; per-desktop 前景與 keystate、dinput 的 CBT hook 行為)都在 winex11 上做的;要換
+; winewayland 得另開 runner 重量一輪,不是改這一行。
+; 這個鍵由 explorer.exe 在建 desktop 時讀,只能放全域,AppDefaults 底下沒用。
+[HKEY_CURRENT_USER\Software\Wine\Drivers]
+"Graphics"="x11"

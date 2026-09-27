@@ -1,0 +1,114 @@
+winex11: Add a per-application opt-out from requesting _NET_ACTIVE_WINDOW.
+
+MapleStory TW steals the desktop focus back every few seconds.  Click on
+anything else -- a browser, a terminal -- and the game is in front again a
+moment later, which makes the machine unusable while the game is open.  The
+game itself is not doing anything unusual: it calls SetForegroundWindow() on
+its own windows continuously (the main window and the embedded NxOverlay web
+view both do it).  What changed is what winex11 does with such a call.
+
+wine-10.0 (the base CrossOver ships, on which this game does not steal focus):
+
+    X11DRV_SetFocus()               dlls/winex11.drv/event.c:1281
+        if (!data->managed || data->embedder) set_input_focus( data );
+
+  For a window the window manager manages -- every top-level window here --
+  it does nothing at all.  The activation stays inside wine; the X focus and
+  the WM's idea of the active window are never touched.  wine-10.0's winex11
+  never sends _NET_ACTIVE_WINDOW at all: grep finds no sender in the whole
+  driver.
+
+wine-10.16:
+
+    X11DRV_ActivateWindow()         dlls/winex11.drv/event.c:1344
+        if (!is_virtual_desktop()) set_net_active_window( hwnd, previous );
+    set_net_active_window()         dlls/winex11.drv/window.c:1946
+        xev.xclient.data.l[0] = 2;  /* source: pager */
+
+  Every activation now asks the window manager to make the window active, and
+  it asks as a pager.  KWin (and others) treat a pager request as a direct
+  user action and grant it unconditionally, bypassing focus stealing
+  prevention entirely.  A program that activates itself in a loop therefore
+  owns the desktop focus.
+
+There is no way to ask this game to stop, so this adds a way to tell winex11
+not to ask the window manager, which is the 10.0 behaviour.  The check goes at
+the top of set_net_active_window() rather than at its callers: both call sites
+(event.c:1258 when a window is mapped while it is the foreground window, and
+event.c:1348 on activation) go through this one function, and any future one
+will too.  Activation inside wine is unaffected; so is set_input_focus() for
+unmanaged and embedded windows.
+
+The key is read through the existing X11 Driver option mechanism, so it can be
+set per application:
+
+    [HKEY_CURRENT_USER\Software\Wine\AppDefaults\MapleStory.exe\X11 Driver]
+    "RequestNetActiveWindow"="N"
+
+The default is "Y" -- unset, every application behaves exactly as before.
+
+Measured on this machine on 2026-09-14, by sampling the owning process of
+_NET_ACTIVE_WINDOW once a second for 30s after switching the focus away once
+(tools/dev/focustest.sh; no other action is taken, nothing is ever re-activated):
+
+    ours, key absent (upstream behaviour)   28/30 samples back on the game
+                                                 (first one 1s after switching away)
+    ours, "RequestNetActiveWindow"="N"       0/30
+    CrossOver's wine-10.0 build              0/30
+
+The same A/B, on the same build, with a probe whose whole body is a window plus
+SetForegroundWindow() on itself twice a second (tools/dev/focusthief.c).  This takes
+the game, its overlay, its anti-cheat and its login server out of the picture,
+and leaves the registry key as the only difference between the two runs:
+
+    probe, key absent                       30/30
+    probe, "RequestNetActiveWindow"="N"      0/30
+
+diff --git a/dlls/winex11.drv/window.c b/dlls/winex11.drv/window.c
+--- a/dlls/winex11.drv/window.c
++++ b/dlls/winex11.drv/window.c
+@@ -1949,6 +1949,12 @@
+     Window window;
+     XEvent xev;
+ 
++    /* Some applications call SetForegroundWindow() on themselves over and over.  On a
++     * window manager that honours a pager request unconditionally that steals the desktop
++     * focus away from whatever the user is doing.  "RequestNetActiveWindow"="N" in the
++     * per-application X11 Driver key restores the wine 10.0 behaviour for such a program:
++     * managed windows are then activated inside wine only, without asking the WM. */
++    if (!request_net_active_window) return;
+     if (!is_net_supported( x11drv_atom(_NET_ACTIVE_WINDOW) )) return;
+     if (!(window = X11DRV_get_whole_window( hwnd ))) return;
+     if (data->pending_state.net_active_window == window) return;
+diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -456,6 +456,7 @@
+ extern BOOL usexvidmode;
+ extern BOOL use_egl;
+ extern BOOL use_take_focus;
++extern BOOL request_net_active_window;
+ extern BOOL use_primary_selection;
+ extern BOOL use_system_cursors;
+ extern BOOL grab_fullscreen;
+diff --git a/dlls/winex11.drv/x11drv_main.c b/dlls/winex11.drv/x11drv_main.c
+--- a/dlls/winex11.drv/x11drv_main.c
++++ b/dlls/winex11.drv/x11drv_main.c
+@@ -70,6 +70,7 @@
+ BOOL usexcomposite = TRUE;
+ BOOL use_egl = FALSE;
+ BOOL use_take_focus = TRUE;
++BOOL request_net_active_window = TRUE;
+ BOOL use_primary_selection = FALSE;
+ BOOL use_system_cursors = TRUE;
+ BOOL grab_fullscreen = FALSE;
+@@ -463,6 +464,9 @@
+     if (!get_config_key( hkey, appkey, "UseTakeFocus", buffer, sizeof(buffer) ))
+         use_take_focus = IS_OPTION_TRUE( buffer[0] );
+ 
++    if (!get_config_key( hkey, appkey, "RequestNetActiveWindow", buffer, sizeof(buffer) ))
++        request_net_active_window = IS_OPTION_TRUE( buffer[0] );
++
+     if (!get_config_key( hkey, appkey, "UsePrimarySelection", buffer, sizeof(buffer) ))
+         use_primary_selection = IS_OPTION_TRUE( buffer[0] );
+ 

@@ -1,0 +1,36 @@
+win32u: Never antialias a bitmap font (and the fonts linked behind it).
+
+A bitmap font has no outlines, so antialiasing it is meaningless.  It also has
+a second, less obvious effect: the DC keeps one aa_flags for the whole font
+link chain, taken from the *base* font.  When an application selects a bitmap
+font whose charset it cannot cover on its own, the glyphs actually come from a
+linked scalable font -- and that font is then rasterised with the base font's
+aa_flags, ignoring its own GASP table and its embedded bitmap strikes.
+
+This is exactly what a CP950 application hits.  MapleStory asks for
+
+    CreateFont( 16, 7, 0, 0, FW_BOLD, ..., CHINESEBIG5_CHARSET, ..., "System" )
+
+"System" resolves to the DBCS system raster font (cvgasys.fon), which carries
+no Han glyphs, so every Chinese character is drawn from the linked MingLiU.
+With a subpixel aa_flags inherited from the raster base font, MingLiU came out
+antialiased at ppem 16, even though its GASP asks for no grayscale below
+ppem 48 and it ships a 1-bit strike for exactly that size.  On Windows the
+same text is a crisp 16px bitmap.
+
+--- a/dlls/win32u/freetype.c
++++ b/dlls/win32u/freetype.c
+@@ -2510,6 +2510,13 @@
+  */
+ static UINT freetype_get_aa_flags( struct gdi_font *font, UINT aa_flags, BOOL antialias_fakes )
+ {
++    /* A bitmap font has no outlines to antialias.  This also matters for the
++     * fonts linked to it: the DC keeps a single aa_flags for the whole chain,
++     * so leaving a subpixel mode here forces the linked DBCS font (e.g. MingLiU
++     * behind the CP950 "System" font) to be antialiased, ignoring its own GASP
++     * table and its embedded bitmap strikes. */
++    if (!font->scalable) return GGO_BITMAP;
++
+     /* fixup the antialiasing flags for that font */
+     switch (aa_flags)
+     {

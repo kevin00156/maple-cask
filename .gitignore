@@ -1,0 +1,5 @@
+*.log
+tasks/
+__pycache__/
+*.exe
+gamefont.bmp

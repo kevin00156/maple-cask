@@ -1,0 +1,32 @@
+kernelbase: Redirect CreateFileA("ws2_32.dll") to the system32 copy (MapleStory / BlackCipher).
+
+BlackCipher opens "ws2_32.dll" by bare name to read a clean on-disk image for
+its integrity comparison.  The relative name resolves against the game's
+working directory, where no such file exists under Wine, so the open fails and
+the comparison can never succeed.
+
+This is the second, unlabelled kernelbase hack found next to the .msf one in
+Nexon's CrossOver-based FOSS tree (dlls/kernelbase/file.c, CreateFileA).  It
+is kept separate from 0001 so the two can be bisected independently; only the
+exact string "ws2_32.dll" is affected.
+
+The NULL check matters: CreateFileA(NULL, ...) is not a crash upstream --
+file_name_AtoW() feeds the pointer to RtlInitAnsiString(), which treats NULL as
+an empty string, so the call just fails cleanly.  Comparing the bare pointer
+before that would turn a harmless bad call from an application into a crash
+inside kernelbase.
+
+--- a/dlls/kernelbase/file.c
++++ b/dlls/kernelbase/file.c
+@@ -755,6 +755,11 @@
+     WCHAR *nameW;
+ 
+     if ((GetVersion() & 0x80000000) && IsBadStringPtrA( name, -1 )) return INVALID_HANDLE_VALUE;
++
++    /* MapleStory HACK: BlackCipher opens ws2_32.dll by bare name; make that resolve to system32 */
++    if (name && !strcmp( name, "ws2_32.dll" ))
++        name = "C:\\windows\\system32\\ws2_32.dll";
++
+     if (!(nameW = file_name_AtoW( name, FALSE ))) return INVALID_HANDLE_VALUE;
+     return CreateFileW( nameW, access, sharing, sa, creation, attributes, template );
+ }

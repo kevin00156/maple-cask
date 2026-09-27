@@ -1,0 +1,1057 @@
+#!/usr/bin/env python3
+"""一步拿到楓之谷登入用的「帳號 sid + OTP」,順手把遊戲開起來。
+
+    tools/maple-login            # 有 session 就鑄 OTP;沒有或失效就帶你掃 QR,然後鑄
+    tools/maple-login --run      # 印完立刻開遊戲(2 分鐘的表單窗口從那一刻起算)
+    tools/maple-login login      # 強制重掃 QR(不管舊 session 還活著沒)
+    tools/maple-login status     # session 還活著嗎(實際打一次 API);活 0、死 1
+    tools/maple-login forget     # 刪掉 session 檔,並停掉保活
+    tools/maple-login keepalive  # 戳一下 session(給 systemd timer 用,不必手動跑)
+
+多個遊戲帳號時會列出來讓你挑,上次選的就是預設值 —— 直接按 Enter 就好。
+給腳本用的話 --name 或 --pick N 可以跳過詢問(不是 tty 時本來就不會問)。
+
+剪貼簿只有一格,所以帳號和密碼分兩段給:先複製 sid,貼完按 Enter 換成 OTP。
+(--run 例外,那時遊戲還沒開、沒地方貼,所以只複製 sid。)
+
+**保活**:只要手上有活的 session(鑄一次 OTP 就算),就會裝一個 systemd user timer,
+每 10 分鐘戳一次 session 讓它別過期,省得一直重掃 QR。session 死了它會自己停掉並跳通知。
+看紀錄:`journalctl --user -u maple-keepalive`。注意 session 仍在 tmpfs,**重開機還是要重掃**。
+
+遊戲登入表單的「帳號」要填 beanfun 遊戲帳號的 **sid**,不是帳號名稱。
+
+QR 直接畫在終端機上(半格區塊字元),不叫外部看圖程式 —— 詳見 docs/how-it-works.md
+的「QR 怎麼顯示」。終端機畫不下才退回找看圖程式。
+
+session 檔預設在 $XDG_RUNTIME_DIR/maplestory-tw/session.json(tmpfs、0600),
+可用 $MAPLE_SESSION_FILE 覆寫。它是 tmpfs,**重開機就消失,這是刻意的** ——
+裡面的 bfWebToken 等同登入憑證,不該落在磁碟上。
+
+「上次選的帳號」不是憑證,所以不跟它同壽命:存在
+$XDG_CONFIG_HOME/maplestory-tw/prefs.json(預設 ~/.config),重開機不會丟。
+"""
+from __future__ import annotations
+
+import argparse
+import dataclasses
+import glob
+import json
+import os
+import re
+import shutil
+import struct
+import subprocess
+import sys
+import time
+import unicodedata
+import zlib
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(HERE, "beanfun"))
+
+import bfotp  # noqa: E402
+import requests  # noqa: E402
+
+SERVICE = (bfotp.DEFAULT_SERVICE_CODE, bfotp.DEFAULT_SERVICE_REGION)
+
+
+def launcher() -> str:
+    """--run 要執行的啟動器。預設 tools/gs-run.sh(遊戲進 gamescope;不經 gamescope 常常連不上登入伺服器,
+    見 docs/known-issues.md)。做成函式而不是常數:MAPLE_LAUNCHER 可能寫在 env.sh 裡,要到 main() 載完才看得到。"""
+    return os.environ.get("MAPLE_LAUNCHER") or os.path.join(HERE, "gs-run.sh")
+
+
+def load_env() -> None:
+    """沒 source env.sh 的話,自己載 $MAPLE_ENV(預設 ~/.config/maplestory-tw/env.sh)。
+    交給 bash 去 source 再 env -0 倒回來,不自己解析 shell。"""
+    if os.environ.get("WINE_ROOT"):
+        return
+    envf = os.environ.get("MAPLE_ENV") or os.path.join(
+        os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "maplestory-tw", "env.sh")
+    if not os.path.isfile(envf):
+        return
+    out = subprocess.run(["bash", "-c", 'source "$1" && env -0', "_", envf],
+                         capture_output=True, check=False).stdout
+    for kv in out.split(b"\0"):
+        k, _, v = kv.partition(b"=")
+        if k:
+            os.environ[k.decode()] = v.decode()
+
+
+def mapletype_cmd() -> list[str]:
+    """一定要 prefix 對應的那份 wine(見 wine_ready())。"""
+    return [os.path.join(os.environ["WINE_ROOT"], "bin", "wine"), MAPLETYPE]
+RUN_ENV = ("WINE_ROOT", "WINEPREFIX", "GAME_DIR")
+
+# 半格區塊字元:(上排模組, 下排模組) -> 字元
+BLOCK = {(0, 0): " ", (1, 1): "\u2588", (1, 0): "\u2580", (0, 1): "\u2584"}
+
+# 真的看圖程式。xdg-open 不放這裡 —— 它只是轉手,用之前要先問它轉給誰
+VIEWERS = ("gwenview", "loupe", "eog", "eom", "ristretto", "viewnior",
+           "nomacs", "qimgv", "feh", "imv", "nsxiv", "sxiv")
+
+# 這些目錄裡的 .desktop 是 snap / flatpak 包的程式。它們在自己的 mount namespace
+# 裡跑,看不到 $XDG_RUNTIME_DIR,QR 圖丟過去只會得到「沒有權限查看」
+SANDBOX_DESKTOP_DIRS = (
+    "/var/lib/snapd/desktop/applications",
+    "/var/lib/flatpak/exports/share/applications",
+    os.path.expanduser("~/.local/share/flatpak/exports/share/applications"),
+)
+
+
+def die(msg: str, code: int = 1) -> int:
+    print(msg, file=sys.stderr)
+    return code
+
+
+# -----------------------------------------------------------------------------
+# 存檔:憑證放 tmpfs,偏好放 ~/.config
+# -----------------------------------------------------------------------------
+#
+# 兩種資料的壽命不一樣,所以不放同一個檔:
+#   session.json  bfWebToken + 整個 cookie jar,等同登入憑證 —— tmpfs、0600、重開機消失
+#   prefs.json    上次選的遊戲帳號,沒有祕密 —— $XDG_CONFIG_HOME,重開機要還在
+
+
+@dataclasses.dataclass
+class Login:
+    """一次登入的成果。
+
+    accounts 要真的打過 API 才有內容 —— load_session() 只是讀檔,拿不到清單。
+    """
+
+    session: requests.Session
+    web_token: str
+    accounts: list[dict] = dataclasses.field(default_factory=list)
+
+    def close(self) -> None:
+        self.session.close()
+
+
+def runtime_dir() -> str:
+    base = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    d = os.path.join(base, "maplestory-tw")
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    return d
+
+
+def config_dir() -> str:
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    return os.path.join(base, "maplestory-tw")
+
+
+def session_path() -> str:
+    override = os.environ.get("MAPLE_SESSION_FILE")
+    return override if override else os.path.join(runtime_dir(), "session.json")
+
+
+def prefs_path() -> str:
+    """多開時每組各記各的帳號(maple -N 會設 MAPLE_INSTANCE);第 1 組沿用 prefs.json。"""
+    n = os.environ.get("MAPLE_INSTANCE", "1")
+    return os.path.join(config_dir(), "prefs.json" if n in ("", "1") else f"prefs-{n}.json")
+
+
+def write_json(path: str, data: dict) -> None:
+    """原子換檔寫 JSON(0600)。
+
+    背景保活與前景指令會同時碰 session 檔,直接 O_TRUNC 寫的話中間有一段檔案是
+    半截的,讀到的人會判定 session 壞掉、把你送去重掃 QR。
+    """
+    os.makedirs(os.path.dirname(path) or ".", mode=0o700, exist_ok=True)
+    tmp = f"{path}.{os.getpid()}.tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f)
+        os.replace(tmp, path)  # 同目錄 rename 是原子的
+    except Exception:
+        os.unlink(tmp)
+        raise
+
+
+def save_session(login: Login) -> None:
+    write_json(session_path(), {
+        "web_token": login.web_token,
+        "saved_at": time.time(),
+        # domain/path 要一起存 —— bfotp.bfwebtoken() 會挑 portal host 看得到的那一份
+        "cookies": [
+            {"name": c.name, "value": c.value, "domain": c.domain, "path": c.path}
+            for c in login.session.cookies
+        ],
+    })
+
+
+def load_session() -> Login:
+    """讀 session 檔。沒有檔案或檔案壞掉一律丟 BFError。"""
+    path = session_path()
+    if not os.path.exists(path):
+        raise bfotp.BFError("沒有存好的 session")
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        cookies = data["cookies"]
+        web_token = data["web_token"]
+    except (ValueError, KeyError, OSError) as exc:
+        raise bfotp.BFError(f"session 檔讀不動({exc});當作沒有") from exc
+
+    s = bfotp.new_session()
+    for c in cookies:
+        s.cookies.set_cookie(
+            requests.cookies.create_cookie(
+                name=c["name"], value=c["value"], domain=c["domain"], path=c["path"]
+            )
+        )
+    bfotp.log("session 載入,已存 %d 秒" % int(time.time() - data.get("saved_at", 0)))
+    return Login(s, web_token)
+
+
+def open_session() -> Login:
+    """載入 session 並實際打一次 API,順手把帳號清單填進來。"""
+    login = load_session()
+    try:
+        login.accounts = bfotp.list_accounts(login.session, login.web_token, *SERVICE)
+    except Exception:
+        login.close()
+        raise
+    return login
+
+
+def load_remembered() -> dict | None:
+    """上次選的遊戲帳號。沒有或讀不動都回 None —— 這只是預設值,不值得害人卡住。"""
+    try:
+        with open(prefs_path()) as f:
+            acct = json.load(f).get("account")
+    except (ValueError, OSError):
+        return None
+    return acct if isinstance(acct, dict) and acct.get("sname") else None
+
+
+def save_remembered(account: dict) -> None:
+    write_json(prefs_path(), {"account": account, "saved_at": time.time()})
+
+
+# -----------------------------------------------------------------------------
+# QR 登入
+# -----------------------------------------------------------------------------
+
+
+def png_dark(png: bytes):
+    """解 PNG,回傳 (寬, 高, dark(x, y))。看不懂的格式回 None。
+
+    只認 bit depth 8、非交錯 —— 伺服器那張就是(250x250 RGB)。
+    刻意不用 Pillow:這支工具只靠 requests,多一個相依就多一種
+    「在別人機器上跑不起來」。
+    """
+    if png[:8] != b"\x89PNG\r\n\x1a\n":
+        return None
+    w = h = depth = ctype = interlace = 0
+    idat, plte = [], b""
+    i = 8
+    while i + 8 <= len(png):
+        ln = struct.unpack(">I", png[i:i + 4])[0]
+        tag, body = png[i + 4:i + 8], png[i + 8:i + 8 + ln]
+        if tag == b"IHDR":
+            w, h, depth, ctype, _, _, interlace = struct.unpack(">IIBBBBB", body)
+        elif tag == b"PLTE":
+            plte = body
+        elif tag == b"IDAT":
+            idat.append(body)
+        elif tag == b"IEND":
+            break
+        i += 12 + ln
+
+    chans = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}.get(ctype)
+    if depth != 8 or interlace != 0 or chans is None or not (idat and w and h):
+        return None
+    try:
+        raw = zlib.decompress(b"".join(idat))
+    except zlib.error:
+        return None
+    stride = w * chans
+    if len(raw) != (stride + 1) * h:
+        return None
+
+    # 解 PNG 的 5 種列過濾器(規格 §9.2),解完 out 就是原始像素
+    out = bytearray(stride * h)
+    prev = bytearray(stride)
+    pos = 0
+    for y in range(h):
+        ft = raw[pos]
+        line = bytearray(raw[pos + 1:pos + 1 + stride])
+        pos += stride + 1
+        if ft:
+            for x in range(stride):
+                a = line[x - chans] if x >= chans else 0
+                b = prev[x]
+                if ft == 1:
+                    line[x] = (line[x] + a) & 0xFF
+                elif ft == 2:
+                    line[x] = (line[x] + b) & 0xFF
+                elif ft == 3:
+                    line[x] = (line[x] + (a + b) // 2) & 0xFF
+                elif ft == 4:
+                    c = prev[x - chans] if x >= chans else 0
+                    p = a + b - c
+                    pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                    line[x] = (line[x] + (a if pa <= pb and pa <= pc else b if pb <= pc else c)) & 0xFF
+                else:
+                    return None
+        out[y * stride:(y + 1) * stride] = line
+        prev = line
+
+    if ctype == 3:
+        if len(plte) < 3:
+            return None
+
+        def dark(x: int, y: int) -> bool:
+            k = out[y * stride + x] * 3
+            return plte[k] * 299 + plte[k + 1] * 587 + plte[k + 2] * 114 < 128000
+    elif chans >= 3:
+
+        def dark(x: int, y: int) -> bool:
+            k = y * stride + x * chans
+            return out[k] * 299 + out[k + 1] * 587 + out[k + 2] * 114 < 128000
+    else:
+
+        def dark(x: int, y: int) -> bool:
+            return out[y * stride + x * chans] < 128
+
+    return w, h, dark
+
+
+def qr_matrix(png: bytes):
+    """把伺服器那張 QR 還原成 n x n 的模組矩陣。不像 QR 就回 None。
+
+    只是照模組中心取樣,**不重新編碼** —— 畫出來的內容與原圖逐位元相同,
+    所以沒有「拿 deeplink 重繪會做出另一張 QR」的問題。
+    """
+    got = png_dark(png)
+    if not got:
+        return None
+    w, h, dark = got
+
+    cols = [x for x in range(w) if any(dark(x, y) for y in range(h))]
+    rows = [y for y in range(h) if any(dark(x, y) for x in range(w))]
+    if not cols or not rows:
+        return None
+    x0, x1, y0, y1 = cols[0], cols[-1], rows[0], rows[-1]
+
+    # 左上角定位點最上面那一列剛好 7 個模組寬,拿它換算一個模組幾個像素
+    run = 0
+    while x0 + run <= x1 and dark(x0 + run, y0):
+        run += 1
+    if run < 7:
+        return None
+    mod = run / 7
+    n = round((x1 - x0 + 1) / mod)
+    if not (21 <= n <= 177 and n % 4 == 1) or abs((y1 - y0) - (x1 - x0)) > mod:
+        return None
+
+    m = [[dark(min(w - 1, int(x0 + (i + .5) * mod)), min(h - 1, int(y0 + (j + .5) * mod)))
+          for i in range(n)] for j in range(n)]
+    # 時序列(第 6 行/列)一定是黑白相間。對不上就是取樣歪了,寧可不畫也不畫錯
+    if any(m[6][i] != (i % 2 == 0) or m[i][6] != (i % 2 == 0) for i in range(8, n - 8)):
+        return None
+    return m
+
+
+def qr_to_terminal(png: bytes) -> bool:
+    """把 QR 畫在終端機上。畫了回 True,畫不了(格式怪/視窗太小)回 False。
+
+    一個字元格塞上下兩排模組(▀),字元格本來就是 1:2,這樣一個模組才是方的 ——
+    手機掃得動的前提。背景自己塗白,不然深色主題的終端機掃不出來。
+    """
+    m = qr_matrix(png)
+    if not m:
+        return False
+    quiet = 4  # QR 規格要求的靜區
+    n = len(m) + 2 * quiet
+    need_lines = (n + len(m) % 2) // 2
+    cols, lines = shutil.get_terminal_size((80, 24))
+    if n > cols or need_lines + 6 > lines:
+        print(f"\n終端機太小,畫不下 {n}x{need_lines} 的 QR(現在 {cols}x{lines})。"
+              "把視窗拉大或縮小字級(Ctrl+-)再試一次。")
+        return False
+
+    rows = [[0] * n for _ in range(quiet)]
+    rows += [[0] * quiet + [int(v) for v in r] + [0] * quiet for r in m]
+    rows += [[0] * n for _ in range(quiet + len(m) % 2)]
+    print()
+    for j in range(0, len(rows), 2):
+        top, bot = rows[j], rows[j + 1]
+        print("\033[107;30m" + "".join(BLOCK[(top[i], bot[i])] for i in range(n)) + "\033[0m")
+    return True
+
+
+def sandboxed(desktop: str) -> bool:
+    """這個 .desktop 是 snap / flatpak 包的嗎?"""
+    return any(os.path.exists(os.path.join(d, desktop)) for d in SANDBOX_DESKTOP_DIRS)
+
+
+def open_image(path: str) -> str | None:
+    """開圖片檢視器。回傳用了哪個,沒有能用的回 None。
+
+    不能無腦 xdg-open:它照 mime 資料庫轉手,而預設處理器很可能是 snap / flatpak
+    的瀏覽器 —— 沙盒裡讀不到 $XDG_RUNTIME_DIR,使用者只會看到「沒有權限查看」。
+    所以先挑真的看圖程式,輪到 xdg-open 時先問它要轉給誰。
+    """
+    for tool in VIEWERS:
+        exe = shutil.which(tool)
+        if not exe or exe.startswith("/snap/"):
+            continue
+        try:
+            subprocess.Popen([tool, path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return tool
+        except OSError:
+            continue
+
+    if shutil.which("xdg-open"):
+        try:
+            handler = subprocess.run(
+                ["xdg-mime", "query", "default", "image/png"],
+                capture_output=True, text=True, timeout=10,
+            ).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            handler = ""
+        if not (handler and sandboxed(handler)):
+            try:
+                subprocess.Popen(
+                    ["xdg-open", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                )
+                return "xdg-open"
+            except OSError:
+                pass
+    return None
+
+
+def qr_to_png(png: bytes) -> str:
+    """把伺服器給的 QR PNG 寫到 tmpfs,回傳路徑。"""
+    path = os.path.join(runtime_dir(), "qr.png")
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(png)
+    return path
+
+
+def show_qr(png: bytes, deeplink: str) -> str:
+    """讓使用者看到 QR。優先畫在終端機,畫不了才找看圖程式。回傳圖檔路徑。"""
+    path = qr_to_png(png)
+    if qr_to_terminal(png):
+        print("\n用 beanfun App 掃上面這張 QR。")
+        print(f"  (掃不動的話,圖檔在 {path})")
+    elif open_image(path):
+        print(f"\n用 beanfun App 掃這張 QR:{path}")
+        print("  (圖片檢視器沒自動跳出來的話,自己開這個檔)")
+    else:
+        print(f"\n用 beanfun App 掃這張 QR:{path}")
+        print("  找不到能用的看圖程式 —— 系統預設的那個是 snap / flatpak 包的,")
+        print(f"  沙盒裡讀不到 {runtime_dir()}。用瀏覽器開 file://{path} 也行。")
+    if deeplink:
+        print(f"\n  或在手機上直接開:{deeplink}")
+    return path
+
+
+def qr_login(timeout: int) -> Login:
+    """整條 QR 登入 + 把憑證落地。選哪個帳號是呼叫端的事。"""
+    s = bfotp.new_session()
+    png_path = None
+    try:
+        skey = bfotp.get_session_key(s)
+        token, index_url = bfotp.get_login_index(s, skey)
+        png, deeplink = bfotp.init_qr(s, skey, index_url)
+
+        png_path = show_qr(png, deeplink)
+        print(f"\n等待掃描確認(最多 {timeout} 秒)...", flush=True)
+
+        bfotp.poll_qr(s, index_url, token, timeout)
+        print("已確認,收尾中...")
+        web_token = bfotp.finalize_qr(s, skey, index_url)
+        login = Login(s, web_token)
+        login.accounts = bfotp.list_accounts(s, web_token, *SERVICE)
+        # 先落地再讓呼叫端選帳號。順序反過來的話,多帳號又沒指定 --name 時
+        # pick_account 會拋錯,剛掃到的 bfWebToken 就跟著沒了 —— 又得重掃一次 QR。
+        save_session(login)
+        keepalive_ensure()  # 誰叫的都一樣:手上有活 session 就該有保活
+        return login
+    except Exception:
+        s.close()
+        raise
+    finally:
+        if png_path and os.path.exists(png_path):
+            os.unlink(png_path)
+
+
+# -----------------------------------------------------------------------------
+# 選帳號 / 輸出
+# -----------------------------------------------------------------------------
+
+
+def ask_account(accounts: list[dict], remembered: dict | None) -> dict:
+    """列出帳號讓使用者挑。上次選的當預設,直接按 Enter 就是它。"""
+    default, matched = 1, False
+    if remembered:
+        for i, a in enumerate(accounts, 1):
+            if a["sname"] == remembered.get("sname"):
+                default, matched = i, True
+                break
+    print()
+    for i, a in enumerate(accounts, 1):
+        state = "  (停用)" if not a["enabled"] else ""
+        last = "  ← 上次用的" if matched and i == default else ""
+        print(f"  {i}. {pad(a['sname'], 14)} sid = {a['sid']}{state}{last}")
+    print()
+    while True:
+        try:
+            raw = input(f"選哪個?[1-{len(accounts)},直接 Enter = {default}] ").strip()
+        except EOFError:
+            raise bfotp.BFError("讀不到輸入,用 --name 或 --pick 指定帳號")
+        if not raw:
+            return accounts[default - 1]
+        if raw.isdigit() and 1 <= int(raw) <= len(accounts):
+            return accounts[int(raw) - 1]
+        print(f"  要 1 到 {len(accounts)} 之間的數字,或直接按 Enter")
+
+
+def pick_account(accounts: list[dict], name: str | None, remembered: dict | None,
+                 pick: int | None = None) -> dict:
+    """選一個遊戲帳號。
+
+    多個帳號又沒指定時不再直接拋錯 —— 清單本來就在手上,讓人挑就好。
+    不是 tty(管線 / 排程)才退回拋錯,因為那時沒有人可以回答。
+    """
+    if name:
+        for a in accounts:
+            if a["sname"] == name:
+                return a
+        names = "、".join(a["sname"] for a in accounts)
+        raise bfotp.BFError(f"清單裡沒有 {name!r}。可用的是:{names}")
+    if pick is not None:
+        if not 1 <= pick <= len(accounts):
+            raise bfotp.BFError(f"--pick 要在 1..{len(accounts)} 之間")
+        return accounts[pick - 1]
+    if len(accounts) == 1:
+        return accounts[0]
+    if not sys.stdin.isatty():
+        names = "、".join(a["sname"] for a in accounts)
+        raise bfotp.BFError(f"有多個遊戲帳號,請用 --name 或 --pick 指定:{names}")
+    return ask_account(accounts, remembered)
+
+
+def pad(s: str, width: int) -> str:
+    """按終端機顯示寬度補空白 —— 全形字算兩格,ljust 會算成一格。"""
+    w = sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in s)
+    return s + " " * max(0, width - w)
+
+
+def to_clipboard(text: str) -> str | None:
+    """依序試 klipper / xclip / wl-copy。成功回傳用的是哪一個,都不行回 None。"""
+    if shutil.which("qdbus"):
+        try:
+            subprocess.run(
+                ["qdbus", "org.kde.klipper", "/klipper",
+                 "org.kde.klipper.klipper.setClipboardContents", text],
+                check=True, capture_output=True, timeout=10,
+            )
+            return "klipper"
+        except Exception:
+            pass
+    for tool, cmd in (("xclip", ["xclip", "-selection", "clipboard"]), ("wl-copy", ["wl-copy"])):
+        if not shutil.which(tool):
+            continue
+        try:
+            subprocess.run(cmd, input=text.encode(), check=True,
+                           capture_output=True, timeout=10)
+            return tool
+        except Exception:
+            pass
+    return None
+
+
+def show(accounts: list[dict], acct: dict, otp: str) -> None:
+    print()
+    print("─── 楓之谷登入資訊 " + "─" * 40)
+    print()
+    for a in accounts:
+        mark = "▶" if a["sname"] == acct["sname"] else " "
+        state = "" if a["enabled"] else "  (停用)"
+        print(f"  {mark} {pad(a['sname'], 14)} sid = {a['sid']}{state}")
+    print()
+    print(f"  帳號欄要填的是 sid,不是帳號名稱 {acct['sname']}:")
+    print()
+    print(f"    帳號: {acct['sid']}")
+    print(f"    密碼: {otp}")
+    print()
+    print("  ⚠ OTP 是一次性的;空的登入表單閒置約 2 分鐘會自己關 —— 現在就開遊戲")
+    print()
+
+
+def hand_over(acct: dict, otp: str, no_clip: bool, two_stage: bool) -> None:
+    """把 sid / OTP 交到使用者手上。
+
+    剪貼簿只有一格,所以「分別複製」只能分兩段:先給 sid,貼完按 Enter 換成 OTP。
+    --run 走單段(不能停下來等,遊戲還沒開,那時沒地方貼)。
+    剪貼簿不可用一律只印一行繼續,不當成錯誤。
+    """
+    if no_clip:
+        return
+    if not to_clipboard(acct["sid"]):
+        print("  剪貼簿不可用(沒有 klipper / xclip / wl-copy),請手動複製")
+        print()
+        return
+    if not (two_stage and sys.stdin.isatty()):
+        print("  ✓ sid 已複製到剪貼簿,貼上後再手動輸入 OTP")
+        print()
+        return
+    print("  ✓ 帳號(sid)在剪貼簿裡了")
+    try:
+        input("  → 貼完帳號按 Enter,把密碼換進剪貼簿…")
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return
+    if to_clipboard(otp):
+        print("  ✓ 密碼(OTP)在剪貼簿裡了")
+    else:
+        print("  密碼複製失敗,請照上面手動輸入")
+    print()
+
+
+# -----------------------------------------------------------------------------
+# 自動輸入
+# -----------------------------------------------------------------------------
+
+MAPLETYPE = os.path.join(HERE, "mapletype.exe")
+
+
+def game_pids() -> list[str]:
+    """誰 map 了 $GAME_DIR 底下的檔案,誰就是遊戲行程。
+
+    判準照 tools/dev/gametest.sh 的 gamepids():不看行程名稱(comm 只有 15 字元,
+    BlackCipher64.aes 會被截成 BlackCipher64.a),也不看視窗標題
+    (Konsole 的標題會顯示 cwd,曾被當成遊戲視窗)。
+    """
+    game_dir = os.environ.get("GAME_DIR")
+    if not game_dir:
+        return []
+    pids = []
+    for d in glob.glob("/proc/[0-9]*"):
+        try:
+            with open(os.path.join(d, "maps")) as f:
+                if game_dir in f.read():
+                    pids.append(os.path.basename(d))
+        except OSError:
+            continue  # 行程剛結束,或不是我們的
+    return pids
+
+
+def env_problem() -> str | None:
+    """WINE_ROOT / WINEPREFIX / GAME_DIR 這份契約。缺什麼回一段話,齊全回 None。
+
+    run.sh、prefix/setup-prefix.sh、mapletype.exe 要的是同一組變數,所以只檢查一次。
+    """
+    missing = [k for k in RUN_ENV if not os.environ.get(k)]
+    if not missing:
+        return None
+    return (
+        "沒設 " + "、".join(missing) + "\n"
+        "  它們跟 run.sh / prefix/setup-prefix.sh 是同一份契約,照 env.example 設:\n"
+        "      mkdir -p ~/.config/maplestory-tw && cp env.example ~/.config/maplestory-tw/env.sh"
+    )
+
+
+def build_mapletype() -> str | None:
+    """mapletype.exe 不進 git(二進位):沒有、或比 .c 舊(git pull 過),就當場編。
+
+    建置指令只有一份,在 mapletype.c 檔頭(build-wine.sh、setup-prefix.sh 也是這樣撈)。
+    編不成但手上有舊的 exe 就照用;連舊的都沒有才回一段話。
+    """
+    src = MAPLETYPE[:-len(".exe")] + ".c"
+    have = os.path.exists(MAPLETYPE)
+    if have and os.path.getmtime(MAPLETYPE) >= os.path.getmtime(src):
+        return None
+    with open(src, encoding="utf-8") as f:
+        m = re.search(r"x86_64-w64-mingw32-gcc .*", f.read())
+    cmd = m.group(0).strip() if m else "(mapletype.c 檔頭沒有建置指令)"
+    if m and shutil.which("x86_64-w64-mingw32-gcc"):
+        print(f"  編 mapletype.exe:{cmd}", flush=True)
+        r = subprocess.run(cmd, shell=True, cwd=HERE, capture_output=True, text=True)
+        if r.returncode == 0:
+            return None
+        print(r.stderr.strip(), file=sys.stderr)
+    if have:
+        return None
+    return ("沒有 mapletype.exe,也編不出來(要 mingw-w64):\n"
+            f"      sudo apt install mingw-w64 && cd {HERE} && {cmd}")
+
+
+def wine_ready() -> str | None:
+    """跑 mapletype.exe 的前置條件。齊全回 None,缺什麼回一段話。"""
+    problem = env_problem()
+    if problem:
+        return problem
+    problem = build_mapletype()
+    if problem:
+        return problem
+    # 一定要 prefix 對應的那份 wine。發行版的 /usr/bin/wine 版本不符,
+    # 會在遊戲跑著的時候觸發 wineboot 去更新 prefix。
+    if not os.access(os.path.join(os.environ["WINE_ROOT"], "bin", "wine"), os.X_OK):
+        return f"{os.environ['WINE_ROOT']}/bin/wine 不能執行"
+    return None
+
+
+def wait_for_game_window(timeout_sec: int) -> bool:
+    """等遊戲的登入視窗出現。等到回 True。
+
+    給「先開遊戲、再鑄 OTP」這個順序用的:OTP 只有 2 分鐘的窗口,等表單真的
+    出現了才鑄,就不必跟 wine 啟動 + 遊戲載入那 30~60 秒賽跑。
+    偵測交給 mapletype.exe --wait,它每 250ms 用 EnumWindows 找一次。
+    """
+    if wine_ready():
+        return False
+    print(f"  等遊戲的登入視窗出現(最多 {timeout_sec} 秒)…", flush=True)
+    try:
+        r = subprocess.run(mapletype_cmd() + ["--wait", str(timeout_sec * 1000)],
+                           capture_output=True, timeout=timeout_sec + 30)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return r.returncode == 0
+
+
+def auto_type(acct: dict, otp: str, submit: bool, mode: str, gap: int = 0) -> str | None:
+    """把帳號 sid + OTP 打進遊戲的登入表單。做成回 None,做不成回一句「為什麼」。
+
+    做不成一律退回剪貼簿 —— OTP 打錯要整個重開遊戲,這件事只能盡力而為,不能靜默失敗。
+    """
+    problem = wine_ready()
+    if problem:
+        return problem
+    if not game_pids():
+        return "遊戲沒在跑"
+    cmd = mapletype_cmd() + ["--login", "--wait", "20000", "--mode", mode]
+    if gap:
+        # 0 = 一次灌完(預設)。掉字才調高,--gap 40 是 mapletype.c 實測過的人類節奏
+        cmd += ["--gap", str(gap)]
+    if submit:
+        cmd.append("--submit")
+    try:
+        # OTP 走 stdin,不走 argv —— argv 會出現在 /proc/<pid>/cmdline,同機誰都讀得到
+        r = subprocess.run(cmd, input=f"{acct['sid']}\n{otp}\n".encode(),
+                           capture_output=True, timeout=90)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"跑不起來({exc})"
+    out = (r.stdout or b"").decode("utf-8", "replace").strip()
+    if r.returncode != 0:
+        return f"mapletype 回 {r.returncode}:{out.splitlines()[-1] if out else '沒有輸出'}"
+    for line in out.splitlines():
+        print("  " + line)
+    return None
+
+
+# -----------------------------------------------------------------------------
+# 保活(systemd user timer)
+# -----------------------------------------------------------------------------
+#
+# session 不是永久的:cookie 裡有兩個 ASP.NET_SessionId,ASP.NET 的 session state 預設是
+# sliding expiration(閒置計時器,每次請求重置)。所以定期戳一下就能續命,不用一直重掃 QR。
+# 但 bfWebToken 有沒有另一個「絕對壽命」還不知道 —— 真有的話保活只能延到那個上限,
+# 到期仍得重掃。journal 就是這個問題的實驗紀錄:journalctl --user -u maple-keepalive
+#
+# 用 timer 不用常駐 service:跑完就退出,沒有狀態、崩了下次照跑、不用 pid 檔也不用防重入。
+
+UNIT = "maple-keepalive"
+KEEPALIVE_MINUTES = 10  # ASP.NET 預設 idle timeout 的一半,留足餘裕
+
+
+def systemd_unit_dir() -> str:
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    return os.path.join(base, "systemd", "user")
+
+
+def systemctl(*args: str) -> bool:
+    """跑 systemctl --user。成功回 True;沒有 systemd 或失敗都回 False,不拋例外。"""
+    if not shutil.which("systemctl"):
+        return False
+    try:
+        r = subprocess.run(["systemctl", "--user", *args],
+                           capture_output=True, text=True, timeout=15)
+        return r.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def notify(title: str, body: str) -> None:
+    """桌面通知。沒有 notify-send 就算了 —— 跟剪貼簿一樣,降級但不中斷。"""
+    if not shutil.which("notify-send"):
+        return
+    try:
+        subprocess.run(["notify-send", "-a", "maplestory-tw", title, body],
+                       capture_output=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def keepalive_install() -> bool:
+    """寫 unit 檔並啟動 timer。裝起來回 True,沒有 systemd 回 False。"""
+    if not shutil.which("systemctl"):
+        return False
+    me = os.path.abspath(__file__)
+    d = systemd_unit_dir()
+    os.makedirs(d, exist_ok=True)
+    # session 路徑若被 MAPLE_SESSION_FILE 覆寫,要帶進 unit —— systemd 看不到你 shell 的環境
+    override = os.environ.get("MAPLE_SESSION_FILE")
+    env = f"Environment=MAPLE_SESSION_FILE={override}\n" if override else ""
+    with open(os.path.join(d, UNIT + ".service"), "w") as f:
+        f.write(
+            "[Unit]\n"
+            "Description=maplestory-tw:戳一下 beanfun session 讓它不要過期\n"
+            "\n[Service]\n"
+            "Type=oneshot\n"
+            f"{env}"
+            f"ExecStart={me} keepalive\n"
+        )
+    with open(os.path.join(d, UNIT + ".timer"), "w") as f:
+        f.write(
+            "[Unit]\n"
+            "Description=maplestory-tw:每 %d 分鐘保活一次 beanfun session\n"
+            "\n[Timer]\n"
+            "OnActiveSec=%dmin\n"
+            "OnUnitActiveSec=%dmin\n"
+            "AccuracySec=1min\n"
+            "\n[Install]\n"
+            "WantedBy=timers.target\n"
+            % (KEEPALIVE_MINUTES, KEEPALIVE_MINUTES, KEEPALIVE_MINUTES)
+        )
+    systemctl("daemon-reload")
+    return systemctl("enable", "--now", UNIT + ".timer")
+
+
+def keepalive_ensure() -> None:
+    """有活 session 就該有保活。裝過了就什麼都不做,所以每條路徑都能無腦呼叫。
+
+    保活的條件是「手上有一個活的 session」,不是「你跑了哪個子命令」—— 綁在子命令上
+    的話,走 `maple-login`(預設 otp,session 掛了自己退回掃 QR)那條路就永遠裝不起來。
+    """
+    d = systemd_unit_dir()
+    if os.path.exists(os.path.join(d, UNIT + ".timer")):
+        # 裝過了,但 unit 裡寫死的是「當時那份」maple-login 的路徑 —— repo 搬家或換一份 clone 之後
+        # 它會一直跑舊路徑,舊的刪掉那天保活就默默失效。不是指向自己就重裝。
+        try:
+            with open(os.path.join(d, UNIT + ".service")) as f:
+                current = f.read()
+        except OSError:
+            current = ""
+        if f"ExecStart={os.path.abspath(__file__)} keepalive\n" in current:
+            return
+        if keepalive_install():
+            print(f"保活改由這份 maple-login 執行:{os.path.abspath(__file__)}")
+        return
+    if keepalive_install():
+        print(f"保活已啟動:每 {KEEPALIVE_MINUTES} 分鐘戳一次 session,省得一直重掃 QR。")
+        print("  (看紀錄:journalctl --user -u maple-keepalive;停掉:tools/maple-login forget)")
+
+
+def keepalive_remove() -> None:
+    """停掉 timer 並刪掉 unit 檔。本來就沒裝也不會出事。"""
+    systemctl("disable", "--now", UNIT + ".timer")
+    d = systemd_unit_dir()
+    for suffix in (".timer", ".service"):
+        try:
+            os.unlink(os.path.join(d, UNIT + suffix))
+        except OSError:
+            pass
+    systemctl("daemon-reload")
+
+
+def keepalive_state() -> str:
+    """給 status 用的一行描述。"""
+    if not shutil.which("systemctl"):
+        return "沒有 systemd,保活沒裝"
+    if not os.path.exists(os.path.join(systemd_unit_dir(), UNIT + ".timer")):
+        return "保活沒裝(跑一次 tools/maple-login 就會自動裝)"
+    if systemctl("is-active", "--quiet", UNIT + ".timer"):
+        return f"保活跑著,每 {KEEPALIVE_MINUTES} 分鐘戳一次"
+    return "保活裝了但沒在跑(systemctl --user start %s.timer)" % UNIT
+
+
+# -----------------------------------------------------------------------------
+# 子命令
+# -----------------------------------------------------------------------------
+
+
+def check_run_env() -> str | None:
+    """--run 的前置條件。缺什麼就回一段話,齊全回 None。"""
+    problem = env_problem()
+    if problem:
+        return "--run 要的環境變數" + problem
+    if not os.access(launcher(), os.X_OK):
+        return f"--run 需要可執行的 {launcher()},但它不在或不可執行"
+    return None
+
+
+def cmd_otp(args) -> int:
+    # --run 的環境變數先驗 —— OTP 是一次性的,鑄完才發現不能跑就白燒一張。
+    if args.run:
+        problem = check_run_env()
+        if problem:
+            return die(problem, 2)
+
+    try:
+        login = open_session()
+    except Exception as exc:
+        print(f"session 不能用:{exc}", file=sys.stderr)
+        print("→ 帶你重新登入,等一下會跳出 QR 圖,用 beanfun App 掃它", file=sys.stderr)
+        login = qr_login(args.qr_timeout)
+
+    keepalive_ensure()
+    remembered = load_remembered()
+    try:
+        acct = pick_account(login.accounts, args.name, remembered, args.pick)
+        if acct["sname"] != (remembered or {}).get("sname"):
+            save_remembered(acct)  # 記住這次選的,下次不用再打 --name
+        # 先選帳號再等視窗:不然人要乾等幾十秒才被問要用哪個帳號
+        if args.wait_game:
+            if not wait_for_game_window(args.wait_game):
+                print("  沒等到視窗,還是照鑄(等一下會退回剪貼簿)")
+        otp = bfotp.get_otp(login.session, login.web_token, acct, *SERVICE)
+    finally:
+        login.close()
+
+    show(login.accounts, acct, otp)
+
+    # 遊戲開著就直接打進去;--run 例外(遊戲還沒開),--no-type 是手動關掉。
+    typed = False
+    if not (args.run or args.no_type):
+        problem = auto_type(acct, otp, not args.no_submit, args.mode, args.gap)
+        if problem:
+            print(f"  自動輸入沒做成,改用剪貼簿 —— {problem}")
+        else:
+            typed = True
+    if not typed:
+        # --run 之後遊戲才開,那時還沒地方貼,所以只走單段(維持原本行為)
+        hand_over(acct, otp, args.no_clip, two_stage=not args.run)
+
+    if args.run:
+        print(f"==> 啟動遊戲({acct['sname']})\n", flush=True)
+        os.execv(launcher(), [launcher()])
+    return 0
+
+
+def cmd_login(args) -> int:
+    login = qr_login(args.qr_timeout)
+    try:
+        acct = pick_account(login.accounts, args.name, load_remembered(), args.pick)
+        save_remembered(acct)
+    finally:
+        login.close()
+    print(f"\n登入成功,session 已存到 {session_path()}")
+    for a in login.accounts:
+        mark = "▶" if a["sname"] == acct["sname"] else " "
+        print(f"  {mark} {pad(a['sname'], 14)} sid = {a['sid']}"
+              + ("" if a["enabled"] else "  (停用)"))
+    print("\n現在跑 tools/maple-login 就會直接鑄 OTP。")
+    print(keepalive_state())
+    return 0
+
+
+def cmd_status(args) -> int:
+    path = session_path()
+    if not os.path.exists(path):
+        return die(f"沒有 session({path})。跑 tools/maple-login 會自動帶你掃 QR。")
+    try:
+        login = open_session()
+        login.close()
+    except Exception as exc:
+        return die(f"session 失效:{exc}")
+    remembered = load_remembered()
+    who = remembered["sname"] if remembered else "(還沒選過帳號)"
+    print(f"session 還活著,看得到 {len(login.accounts)} 個遊戲帳號,目前記住的是 {who}")
+    print(keepalive_state())
+    return 0
+
+
+def cmd_forget(args) -> int:
+    path = session_path()
+    if os.path.exists(path):
+        os.unlink(path)
+        print(f"session 已刪除({path})")
+    else:
+        print("本來就沒有 session")
+    keepalive_remove()
+    print("保活已停止")
+    return 0
+
+
+def cmd_keepalive(args) -> int:
+    """給 systemd timer 跑的。戳一下 session 讓 sliding expiration 重新計時。"""
+    if not os.path.exists(session_path()):
+        # 重開機後 tmpfs 被清空是正常狀態,不是錯誤 —— 安靜收攤,別每 10 分鐘吵一次
+        keepalive_remove()
+        print("沒有 session(重開機?),保活停止")
+        return 0
+    try:
+        login = open_session()
+    except Exception as exc:
+        keepalive_remove()
+        print(f"session 失效({exc});保活停止", file=sys.stderr)
+        notify("楓之谷 session 過期了", "要玩之前先跑 tools/maple-login login 重掃 QR")
+        return 1
+    try:
+        save_session(login)  # 伺服器可能換了 cookie,不寫回下次就拿舊的去打
+    finally:
+        login.close()
+    keepalive_ensure()  # timer 自己跑時早就在了;手動跑就是「我要保活」的意思
+    print(f"session 還活著,{len(login.accounts)} 個遊戲帳號")
+    return 0
+
+
+COMMANDS = {"otp": cmd_otp, "login": cmd_login, "status": cmd_status,
+            "forget": cmd_forget, "keepalive": cmd_keepalive}
+
+
+def main() -> int:
+    load_env()
+    ap = argparse.ArgumentParser(
+        prog="maple-login",
+        description="取得楓之谷登入用的帳號 sid + OTP",
+        epilog=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    ap.add_argument(
+        "cmd", nargs="?", default="otp", choices=sorted(COMMANDS),
+        help="otp(預設,可省略)/ login 強制重掃 QR / status 檢查 session / "
+             "forget 刪 session / keepalive 戳一下 session(給 systemd timer 用)",
+    )
+    ap.add_argument("--name", metavar="名稱",
+                    help="指定遊戲帳號名稱;只有一個帳號時可省略")
+    ap.add_argument("--pick", type=int, metavar="N",
+                    help="用編號選第 N 個帳號(1 開始);給腳本用,不會問問題")
+    ap.add_argument("--run", action="store_true",
+                    help="印完立刻啟動 run.sh(預設經 tools/gs-run.sh 進 gamescope;需要 WINE_ROOT / WINEPREFIX / GAME_DIR)")
+    ap.add_argument("--no-clip", action="store_true", help="不要寫進剪貼簿")
+    ap.add_argument("--wait-game", type=int, metavar="秒", default=0,
+                    help="先等遊戲的登入視窗出現再鑄 OTP(配合『先開遊戲』的流程)")
+    ap.add_argument("--no-type", action="store_true",
+                    help="就算遊戲開著也不要自動輸入,只複製")
+    ap.add_argument("--no-submit", action="store_true",
+                    help="自動輸入後不要按登入,讓你自己確認(第一次用建議加這個)")
+    ap.add_argument("--mode", default="char", choices=("char", "packet", "key", "both"),
+                    help="自動輸入送哪種訊息,預設 char;打不進去時才換(見 mapletype.c 檔頭)")
+    ap.add_argument("--gap", type=int, default=0, metavar="ms",
+                    help="自動輸入時每個字元之間等幾毫秒,預設 0(一次灌完);掉字才調高,40 是實測過的人類節奏")
+    ap.add_argument("--qr-timeout", type=int, default=180, metavar="秒",
+                    help="等待掃碼秒數,預設 180")
+    ap.add_argument("-v", "--verbose", action="store_true", help="把每一步印到 stderr")
+    args = ap.parse_args()
+
+    bfotp.VERBOSE = args.verbose
+    try:
+        return COMMANDS[args.cmd](args)
+    except bfotp.BFError as exc:
+        return die(f"錯誤:{exc}")
+    except requests.RequestException as exc:
+        return die(f"網路錯誤:{exc}")
+    except KeyboardInterrupt:
+        return die("\n中斷。", 130)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

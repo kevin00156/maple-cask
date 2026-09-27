@@ -1,0 +1,96 @@
+ntdll: Clear 960KB of the new thread's stack again in signal_start_thread.
+
+DIAGNOSTIC PATCH -- not ready to send upstream as-is, see the last paragraph.
+
+signal_start_thread() zeroes a span of stack below the current rsp just before
+it NtContinue()s into RtlUserThreadStart.  That span has, at that moment, just
+been used by LdrInitializeThunk and by the DLL_THREAD_ATTACH of every loaded
+DLL, so whatever those left behind is what the new thread's fresh frames get
+built on top of.
+
+wine-10.0 cleared 0xf0000 (960KB) of it.  Current wine clears 0xf000 (60KB),
+so anything a thread-attach handler wrote deeper than 60KB now survives into
+the new thread.  This restores the 10.0 span on both architectures:
+
+    dlls/ntdll/signal_x86_64.c    leaq -0xf000(%rcx),%rdi   ->  -0xf0000
+    dlls/ntdll/signal_i386.c      movl $0xf000,%ecx         ->  $0xf0000
+
+Why it is worth trying for MapleStory TW: the game runs on CrossOver's
+wine-10.0 base and does not run on our wine-10.16 build (black screen, never
+reaches the login screen).  Pairing up every init_thread entry point in both
+wineserver logs of a back-to-back run shows all of them matching except one:
+
+    entry=147935884 (0x8d1528c)    CrossOver 10.0: 59 threads    ours 10.16: 2
+
+Ours starts two, each one selects with a zero timeout, sits there and then
+terminates itself -- and the factory never creates another.  CrossOver keeps
+creating and reaping them for the whole session.  The game's anti-cheat
+(BlackCipher/NGClient) does have DLL_THREAD_ATTACH handlers, which is exactly
+the code whose stack leftovers this span covers, so "what a new thread sees on
+its stack" is a plausible reason for the factory to stop after two rounds.
+
+Verified on 2026-09-14.  Two runs with this patch, against the recorded
+baselines from the same machine and game directory:
+
+    run                          shcore threads   login screen   BlackCall64.log
+    ours, no patch                     2               no            +20944
+    CrossOver 10.0 (playable)         59              yes            +10920
+    ours + this patch, run 1          59              yes            +10388
+    ours + this patch, run 2          59              yes            +10704
+
+The thread count lands exactly on CrossOver's, the game reaches the login
+screen ("Buffer size:  1920x1080" in its own log -- the 1366x768 line is the
+initial window and appears in failing runs too), and the anti-cheat's log
+volume halves to match CrossOver's.  Before the patch the failure was
+deterministic: 13 runs, 13 failures, with the log deltas repeating to within
+0.02%.
+
+UNVERIFIED -- correction made later the same day.  The same build, with this
+patch confirmed present in the PE ntdll.dll (lea -0xf0000(%rcx) found, the
+60KB form absent), failed 10 out of 10 runs between 22:08 and 22:33 with the
+exact unpatched signature: 2 shcore-entry threads, 126 recv_socket calls,
+NGClient64.log +4352, BlackCall64.log +20944.  An unpatched build had also
+reached the login screen once, at 19:15.  The two successes above are n=2 and
+fall in the same evening time window as that unpatched success, so they are
+evidence of a race whose odds vary with time, not of this patch.  The
+"deterministic failure" baseline is likewise wrong: none of those 13 runs
+were made in that window.  The patch is kept only as a bisect candidate.
+
+One correction to the analysis above: entry 147935884 resolves, in a memory
+map captured during the same run, to shcore.dll -- a Wine builtin, not the
+game and not the anti-cheat.  Like the CRT's _threadstartex it is a shared
+thread wrapper, so it identifies "threads created through shcore", not one
+particular factory.  The 2-to-59 jump therefore means the game as a whole got
+going, rather than one producer resuming.
+
+Before this can go upstream someone has to establish why the span was shrunk
+in the first place -- 0xf0000 also moves rsp 960KB below the context, so a
+thread whose stack reserve is under 1MB would be cleared and switched onto
+unmapped memory.  wine-10.0 shipped that for years, but "it used to work" is
+not an argument.  If this turns out to be the fix, the upstream-shaped change
+is to clear only what the thread's own stack actually covers, not to put a
+hardcoded 960KB back.
+
+
+--- a/dlls/ntdll/signal_x86_64.c
++++ b/dlls/ntdll/signal_x86_64.c
+@@ -998,7 +998,7 @@
+                    "movq %rcx,%rbx\n\t"        /* context */
+                    /* clear the thread stack */
+                    "andq $~0xfff,%rcx\n\t"     /* round down to page size */
+-                   "leaq -0xf000(%rcx),%rdi\n\t"
++                   "leaq -0xf0000(%rcx),%rdi\n\t"
+                    "movq %rdi,%rsp\n\t"
+                    "subq %rdi,%rcx\n\t"
+                    "xorl %eax,%eax\n\t"
+--- a/dlls/ntdll/signal_i386.c
++++ b/dlls/ntdll/signal_i386.c
+@@ -518,7 +518,7 @@
+                    "leal -12(%esi),%edi\n\t"
+                    /* clear the thread stack */
+                    "andl $~0xfff,%edi\n\t"   /* round down to page size */
+-                   "movl $0xf000,%ecx\n\t"
++                   "movl $0xf0000,%ecx\n\t"
+                    "subl %ecx,%edi\n\t"
+                    "movl %edi,%esp\n\t"
+                    "xorl %eax,%eax\n\t"

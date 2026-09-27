@@ -1,0 +1,147 @@
+kernelbase: Preserve the original module name when a DLL is copied to a .tmp file and loaded from there (MapleStory / BlackCipher).
+
+Nexon's BlackCipher anti-cheat copies several system DLLs (ntdll, kernelbase,
+ws2_32, iphlpapi) byte-for-byte to %TEMP%\*.tmp and LoadLibrary()s the copy to
+obtain a "clean" image it can compare against the in-memory module.  On Wine
+the loaded .tmp is a *different* module: Wine's PE DLLs are thin shells whose
+syscall thunks are rewritten at load time, so the copy never matches and the
+anti-cheat never finishes initialising (the game then sits in its login loop
+waiting on objects that are never created).
+
+Record the source name in a "<dest>.tmp.msf" sidecar when CopyFile() copies a
+.dll to a .tmp, and make LoadLibraryExW() load the original DLL instead when it
+is asked for a .tmp that has such a sidecar.  LoadLibrary then returns the
+already-loaded module, the comparison is against itself, and BlackCipher
+proceeds exactly as it does on Nexon's official macOS build -- this is the
+"MapleStory HACK" shipped in Nexon's CrossOver-based FOSS tree
+(dlls/kernelbase/{file,loader}.c), rewritten in Wine style and without the
+early-return leak of the original.
+
+The anti-cheat is NOT disabled or bypassed by this: it still runs all of its
+checks; it is only given the module it asked for.
+
+diff --git a/dlls/kernelbase/file.c b/dlls/kernelbase/file.c
+--- a/dlls/kernelbase/file.c
++++ b/dlls/kernelbase/file.c
+@@ -599,6 +599,40 @@
+     }
+     ret = TRUE;
+ done:
++    if (ret)
++    {
++        const WCHAR *source_ext = wcsrchr( source, '.' );
++        const WCHAR *dest_ext = wcsrchr( dest, '.' );
++
++        /* MapleStoryPort: BlackCipher copies DLL payloads to temporary names
++         * before loading them. Preserve the source name in a sidecar so the
++         * loader can recover the module's original identity. */
++        if (source_ext && dest_ext && !wcsicmp( source_ext, L".dll" )
++                && !wcsicmp( dest_ext, L".tmp" ))
++        {
++            WCHAR *sidecar;
++
++            if ((sidecar = HeapAlloc( GetProcessHeap(), 0,
++                    (wcslen( dest ) + 5) * sizeof(*sidecar) )))
++            {
++                HANDLE sidecar_file;
++
++                wcscpy( sidecar, dest );
++                wcscat( sidecar, L".msf" );
++                sidecar_file = CreateFileW( sidecar, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
++                        FILE_ATTRIBUTE_NORMAL, NULL );
++                if (sidecar_file != INVALID_HANDLE_VALUE)
++                {
++                    DWORD written;
++
++                    WriteFile( sidecar_file, source, wcslen( source ) * sizeof(*source), &written, NULL );
++                    CloseHandle( sidecar_file );
++                }
++                HeapFree( GetProcessHeap(), 0, sidecar );
++            }
++        }
++    }
++
+     /* Maintain the timestamp of source file to destination file and read-only attribute */
+     info.FileAttributes &= FILE_ATTRIBUTE_READONLY;
+     NtSetInformationFile( h2, &io, &info, sizeof(info), FileBasicInformation );
+diff --git a/dlls/kernelbase/loader.c b/dlls/kernelbase/loader.c
+--- a/dlls/kernelbase/loader.c
++++ b/dlls/kernelbase/loader.c
+@@ -553,14 +553,68 @@
+ {
+     UNICODE_STRING str;
+     HMODULE module;
++    WCHAR *original_name = NULL;
+ 
+     if (!name)
+     {
+         SetLastError( ERROR_INVALID_PARAMETER );
+         return 0;
+     }
++
++    /* MapleStoryPort: recover the source DLL name recorded by CopyFileExW
++     * when BlackCipher loads a payload through a .tmp filename. */
++    {
++        const WCHAR *ext = wcsrchr( name, '.' );
++
++        if (ext && !wcsicmp( ext, L".tmp" ))
++        {
++            WCHAR *sidecar;
++
++            if ((sidecar = HeapAlloc( GetProcessHeap(), 0,
++                    (wcslen( name ) + 5) * sizeof(*sidecar) )))
++            {
++                HANDLE sidecar_file;
++
++                wcscpy( sidecar, name );
++                wcscat( sidecar, L".msf" );
++                sidecar_file = CreateFileW( sidecar, GENERIC_READ, FILE_SHARE_READ, NULL,
++                        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL );
++                if (sidecar_file != INVALID_HANDLE_VALUE)
++                {
++                    DWORD size = GetFileSize( sidecar_file, NULL );
++
++                    if (size != INVALID_FILE_SIZE && size && !(size % sizeof(WCHAR))
++                            && (original_name = HeapAlloc( GetProcessHeap(), HEAP_ZERO_MEMORY,
++                            size + sizeof(WCHAR) )))
++                    {
++                        DWORD read;
++
++                        if (!ReadFile( sidecar_file, original_name, size, &read, NULL ) || read != size)
++                        {
++                            HeapFree( GetProcessHeap(), 0, original_name );
++                            original_name = NULL;
++                        }
++                        else
++                        {
++                            TRACE("Replacing temporary module name %s with original name %s.\n",
++                                    debugstr_w(name), debugstr_w(original_name));
++                            name = original_name;
++                        }
++                    }
++                    CloseHandle( sidecar_file );
++                }
++                HeapFree( GetProcessHeap(), 0, sidecar );
++            }
++        }
++    }
++
+     RtlInitUnicodeString( &str, name );
+-    if (str.Length && str.Buffer[str.Length/sizeof(WCHAR) - 1] != ' ') return load_library( &str, flags );
++    if (str.Length && str.Buffer[str.Length/sizeof(WCHAR) - 1] != ' ')
++    {
++        module = load_library( &str, flags );
++        HeapFree( GetProcessHeap(), 0, original_name );
++        return module;
++    }
+ 
+     /* library name has trailing spaces */
+     RtlCreateUnicodeString( &str, name );
+@@ -570,6 +624,7 @@
+     str.Buffer[str.Length/sizeof(WCHAR)] = 0;
+     module = load_library( &str, flags );
+     RtlFreeUnicodeString( &str );
++    HeapFree( GetProcessHeap(), 0, original_name );
+     return module;
+ }
+ 

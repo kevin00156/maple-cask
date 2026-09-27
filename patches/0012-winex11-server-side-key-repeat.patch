@@ -1,0 +1,76 @@
+winex11: Let the server auto-repeat held keys, so modifier keys repeat too.
+
+MapleStory TW binds skills to Shift / Ctrl / Alt and expects them to fire
+again and again while held, exactly as J or any other key does.  On Windows
+they do: the keyboard's typematic repeat covers every key, modifiers
+included.  Under X they never repeat, whatever `xset r` says, because the X
+server refuses in two places (xserver, also Xwayland 24.1):
+
+    _XkbFilterSetState()            xkb/xkbActions.c
+        if (filter->keycode == 0) { /* initial press */
+            AccessXCancelRepeatKey(xkbi, keycode);
+
+  Soft repeat: AccessXFilterPressEvent() starts the repeat timer for the key
+  when its per-key bit is set, and the SetMods/SetGroup action every
+  modifier key carries cancels it again on the same press.
+
+    GetKeyboardEvents()             dix/getevents.c
+        /* ... or we have a modifier, don't generate a repeat event. */
+        if (... || pDev->key->xkbInfo->desc->map->modmap[key_code]) return 0;
+
+  Hard repeat: a second press of a held key that is in the modifier map is
+  dropped, so a compositor (gamescope) re-sending the press cannot help.
+
+Measured under gamescope's Xwayland with a passive XI2 listener: J held 2.1s
+gives 114 X repeat events, Left Shift held 1.9s gives none, with the Shift
+bits of the autorepeat bitmap on for both the core and the slave keyboard.
+
+wineserver already implements Windows-style repeat (server/queue.c, the
+desktop's key_repeat: the last key pressed repeats, KeyboardDelay /
+KeyboardSpeed from the registry); only winewayland turns it on, because
+Wayland sends no repeats.  Turn it on in winex11 as well, and make the server
+the only source of repeats: a hardware key-down for a key that is already
+down, and not coming from the server's own repeat timer, is dropped.
+Otherwise X's repeats and the server's interleave -- with X's delay (600ms
+under gamescope by default) longer than the server's (500ms) a held J got a
+burst of server repeats at 12ms before X's 40ms repeats took over.
+
+Injected input (SendInput) is not affected: the repeat
+logic only looks at IMO_HARDWARE.
+
+keyrepeat-probe in a separate prefix under gamescope, 2s holds:
+                 before           after
+    Left Shift   1 WM_KEYDOWN     133, first repeat 501ms, then 12ms
+    Ctrl         1                157 (with the first half of this patch)
+    Alt          1                161 WM_SYSKEYDOWN, 498ms / 12ms
+    J            X's 600/40ms     183, 501ms / 12ms
+    Shift, then J held 398ms later: Shift once, then J repeats (as Windows).
+
+diff --git a/server/queue.c b/server/queue.c
+--- a/server/queue.c
++++ b/server/queue.c
+@@ -2369,6 +2369,11 @@
+         break;
+     }
+ 
++    /* when the server auto-repeats, it is the only source of repeats: drop the driver's own */
++    if (origin == IMO_HARDWARE && !repeat && desktop->key_repeat.enable &&
++        !(input->kbd.flags & KEYEVENTF_KEYUP) && (desktop_shm->keystate[vkey] & 0x80))
++        return 0;
++
+     message_code = (input->kbd.flags & KEYEVENTF_KEYUP) ? WM_KEYUP : WM_KEYDOWN;
+     switch (vkey)
+     {
+diff --git a/dlls/winex11.drv/x11drv_main.c b/dlls/winex11.drv/x11drv_main.c
+--- a/dlls/winex11.drv/x11drv_main.c
++++ b/dlls/winex11.drv/x11drv_main.c
+@@ -756,6 +756,9 @@
+ 
+     XkbUseExtension( data->display, NULL, NULL );
+     XkbSetDetectableAutoRepeat( data->display, True, NULL );
++    /* X never auto-repeats modifier keys, so let the server repeat held keys the Windows way;
++     * the server then drops the repeats X does send for other keys. */
++    NtUserCallOneParam( TRUE, NtUserCallOneParam_SetKeyboardAutoRepeat );
+     if (TRACE_ON(synchronous)) XSynchronize( data->display, True );
+ 
+     set_queue_display_fd( data->display );

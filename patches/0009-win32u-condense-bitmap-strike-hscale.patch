@@ -1,0 +1,139 @@
+win32u: Condense a bitmap strike under a horizontal-scale-only matrix instead of dropping it.
+
+MapleStory TW draws nine tenths of its text with one request:
+
+    CreateFontW( 16, 7, ..., FW_BOLD, ..., CHINESEBIG5_CHARSET, ..., L"System" )
+
+lfWidth=7 is the tmAveCharWidth of the CP950 System font (cvgasys.fon, an 8x16
+DBCS bitmap face), so the Latin half of the string comes straight out of that
+strike.  The Chinese half comes from the linked font, MingLiU, whose own
+tmAveCharWidth at this size is 8 (9 with the fake bold this request also asks
+for), so get_transform_matrices() builds a horizontal scale for the child:
+
+    width_ratio = aveWidth / tmAveCharWidth = 7 / 8
+
+and freetype_get_glyph_outline() then does this:
+
+    if (matrices || format != GGO_BITMAP) load_flags |= FT_LOAD_NO_BITMAP;
+
+Any matrix at all disqualifies the embedded bitmap.  MingLiU carries 1-bit
+strikes at ppem 11/12/13/15/16/20 and its GASP asks for 1-bit rendering over
+this whole range -- the strike is the intended rendering at 16px -- but the
+glyph is instead taken from the outline, hinted for the untransformed grid,
+and only then multiplied by 0.875.  Grid-fitting done before a scale is
+grid-fitting thrown away: the mono rasteriser drops whatever no longer lands
+on a pixel boundary, so strokes thin out and break up.  On dense CJK glyphs
+this is the difference between a readable character and a blot.
+
+A horizontal scale is not a real obstacle to using the strike -- it is a
+condense, which is what GDI does for a bitmap face asked for a narrower
+lfWidth.  So keep the strike when the matrix set only scales horizontally,
+and condense it here, OR-ing the source columns that each destination column
+covers.  OR rather than sampling: at 0.875 sampling deletes every eighth
+column outright, which is how the outline path already fails.
+
+Measured against the same 16px string rendered by Windows itself (the probe
+in tools/gamefont.c replays the game's exact CreateFont calls; ink pixels in
+the "System h=16 w=7 cs=136" row, glyph advance in parentheses):
+
+    Windows                      1986 ink (15px)
+    before, outline path         1700 ink (15px)   -286, strokes broken
+    after, condensed strike      2003 ink (15px)   +17
+
+The remaining difference in shape is that Windows re-grid-fits the outline on
+the scaled grid rather than condensing a strike; both land on the same advance,
+so text metrics and layout are unaffected either way.  The other five requests
+the game makes are untouched, pixel for pixel.
+
+Signed-off-by: kevin <contact@qazsskevin.org>
+--- a/dlls/win32u/freetype.c
++++ b/dlls/win32u/freetype.c
+@@ -2617,6 +2617,29 @@
+ 
+ static const BYTE masks[8] = {0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01};
+ 
++/* Only a horizontal scale: no rotation, no slant, no vertical scaling.  A bitmap
++ * strike survives such a matrix -- it just has to be condensed, which is what GDI
++ * does for a bitmap face asked for a narrower lfWidth. */
++static BOOL is_hscale_only( const FT_Matrix *matrices )
++{
++    int i;
++
++    if (!matrices) return FALSE;
++    for (i = 0; i < 3; i++)
++        if (matrices[i].xy || matrices[i].yx || matrices[i].yy != (1 << 16)) return FALSE;
++    return TRUE;
++}
++
++/* One pixel of a mono strike row, with the fake bold smear applied in source space
++ * (that is where get_bold_glyph_outline() widened the metrics, so the condensing
++ * below sees the same glyph the bbox was computed from). */
++static inline BOOL mono_src_bit( const BYTE *row, DWORD x, DWORD width, BOOL fake_bold )
++{
++    if (x < width && (row[x >> 3] & masks[x & 7])) return TRUE;
++    if (fake_bold && x && x - 1 < width && (row[(x - 1) >> 3] & masks[(x - 1) & 7])) return TRUE;
++    return FALSE;
++}
++
+ static DWORD get_mono_glyph_bitmap( FT_GlyphSlot glyph, FT_BBox bbox,
+                                     BOOL fake_bold, const FT_Matrix *matrices,
+                                     DWORD buflen, BYTE *buf )
+@@ -2636,6 +2659,40 @@
+     switch (glyph->format)
+     {
+     case FT_GLYPH_FORMAT_BITMAP:
++    {
++        /* A strike loaded under a horizontal-scale-only matrix arrives at its own width
++         * and has to be condensed here.  Every destination column is the OR of the source
++         * columns it covers: sampling would punch holes in dense CJK glyphs, which is
++         * precisely what the outline path does to them. */
++        DWORD src_width = glyph->bitmap.width + (fake_bold ? 1 : 0), sx, sx_end;
++
++        if (width && src_width && src_width != width)
++        {
++            TRACE( "condensing strike %u -> %u (rows %u)\n", src_width, width, glyph->bitmap.rows );
++            src = glyph->bitmap.buffer;
++            dst = buf;
++            h = min( height, glyph->bitmap.rows );
++            memset( buf, 0, buflen );
++            while (h--)
++            {
++                for (x = 0; x < (INT)width; x++)
++                {
++                    sx     = (DWORD)x * src_width / width;
++                    sx_end = ((DWORD)x + 1) * src_width / width;
++                    if (sx_end <= sx) sx_end = sx + 1;
++                    for ( ; sx < sx_end; sx++)
++                    {
++                        if (!mono_src_bit( src, sx, glyph->bitmap.width, fake_bold )) continue;
++                        dst[x >> 3] |= masks[x & 7];
++                        break;
++                    }
++                }
++                src += glyph->bitmap.pitch;
++                dst += pitch;
++            }
++            break;
++        }
++
+         src = glyph->bitmap.buffer;
+         dst = buf;
+         w = min( pitch, (glyph->bitmap.width + 7) >> 3 );
+@@ -2658,6 +2715,7 @@
+             dst += pitch;
+         }
+         break;
++    }
+ 
+     case FT_GLYPH_FORMAT_OUTLINE:
+         ft_bitmap.width = width;
+@@ -3166,7 +3224,8 @@
+     if (vertical_metrics && FT_SimpleVersion < FT_VERSION_VALUE(2, 4, 0))
+         vertical_metrics = FALSE;
+ 
+-    if (matrices || format != GGO_BITMAP) load_flags |= FT_LOAD_NO_BITMAP;
++    if (format != GGO_BITMAP || (matrices && !is_hscale_only( matrices )))
++        load_flags |= FT_LOAD_NO_BITMAP;
+     if (vertical_metrics) load_flags |= FT_LOAD_VERTICAL_LAYOUT;
+ 
+     err = pFT_Load_Glyph(ft_face, glyph, load_flags & FT_LOAD_NO_HINTING ? load_flags : load_flags | FT_LOAD_PEDANTIC);

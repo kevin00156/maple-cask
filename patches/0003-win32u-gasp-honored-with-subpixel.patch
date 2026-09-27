@@ -1,0 +1,31 @@
+win32u: Honour the GASP table even when subpixel rendering is available.
+
+freetype_get_aa_flags() bailed out of the switch as soon as
+is_subpixel_rendering_enabled() returned TRUE, so the GASP check below was
+never reached for any of the WINE_GGO_*RGB_BITMAP modes.  Since
+is_subpixel_rendering_enabled() is a *capability* probe (it only asks whether
+FreeType was built with LCD filtering) and not a user preference, it is TRUE on
+essentially every modern system -- which means GASP was effectively dead code.
+
+Fonts that ask not to be antialiased in a given ppem range were therefore
+antialiased anyway.  This is very visible with the CJK fonts shipped by
+Windows: PMingLiU / MingLiU (新細明體) declare "GRIDFIT, no DOGRAY" for
+ppem 9..48 and carry 1-bit embedded bitmap strikes for ppem 11,12,13,15,16,20.
+On Windows those sizes render as crisp bitmaps; under Wine they came out as
+soft antialiased outlines.
+
+Keep the subpixel mode when it is available, but let the GASP check run in
+either case.
+
+--- a/dlls/win32u/freetype.c
++++ b/dlls/win32u/freetype.c
+@@ -2517,8 +2517,7 @@
+     case WINE_GGO_HBGR_BITMAP:
+     case WINE_GGO_VRGB_BITMAP:
+     case WINE_GGO_VBGR_BITMAP:
+-        if (is_subpixel_rendering_enabled()) break;
+-        aa_flags = GGO_GRAY4_BITMAP;
++        if (!is_subpixel_rendering_enabled()) aa_flags = GGO_GRAY4_BITMAP;
+         /* fall through */
+     case GGO_GRAY2_BITMAP:
+     case GGO_GRAY4_BITMAP:

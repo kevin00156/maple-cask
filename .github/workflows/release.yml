@@ -1,0 +1,59 @@
+# 推 v* tag → 用 build/build-wine.sh 從零 build wine runner → 掛到該 tag 的 GitHub Release。
+# 手動觸發(Actions 頁的 Run workflow)只 build、產物放在 workflow artifact,不發 Release ——
+# 打 tag 之前先用它確認 build 得過。
+#
+# build 步驟只有一份,在 build/build-wine.sh;這裡只負責裝依賴與上傳。
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # build-wine.sh 用 git describe --tags 取版本號
+
+      - name: 騰出磁碟(wine 兩個架構的 obj 好幾 GB)
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+
+      - name: build 依賴(與 README「自己 build」同一份清單)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bison flex pkg-config python3 perl mingw-w64 curl xz-utils \
+            libx11-dev libxext-dev libxrandr-dev libxi-dev libxcursor-dev libxrender-dev libxfixes-dev \
+            libxcomposite-dev libxinerama-dev libfreetype-dev libfontconfig-dev libvulkan-dev libgnutls28-dev \
+            libasound2-dev libpulse-dev libgl-dev libegl-dev libudev-dev libunwind-dev libglib2.0-dev libsdl2-dev
+
+      - name: build/build-wine.sh
+        env:
+          BUILD_DIR: ${{ runner.temp }}/build
+        run: |
+          build/build-wine.sh
+          cd "$BUILD_DIR" && sha256sum maplestory-tw-wine-*.tar.xz > SHA256SUMS
+
+      - name: 發 Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes \
+            "${{ runner.temp }}"/build/maplestory-tw-wine-*.tar.xz "${{ runner.temp }}"/build/SHA256SUMS
+
+      - name: 上傳 artifact(手動觸發)
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: maplestory-tw-wine
+          path: |
+            ${{ runner.temp }}/build/maplestory-tw-wine-*.tar.xz
+            ${{ runner.temp }}/build/SHA256SUMS

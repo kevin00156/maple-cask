@@ -1,0 +1,31 @@
+imm32: Recreate the IME UI window if it was destroyed with its owner.
+
+The IME UI window is created lazily by get_ime_ui_window() as an owned popup
+of the thread's default IME window, and its handle is cached in the thread's
+default input context (imc->ui_hwnd).  When the application destroys the last
+window of the thread, the default IME window goes away and takes the owned UI
+window with it -- but the cached handle is never cleared.  Every later
+get_ime_ui_window() call then returns a dead handle, __wine_ime_wnd_proc()
+forwards all IME UI messages into the void, and the application never sees
+WM_IME_COMPOSITION again.
+
+MapleStory hits this: it creates a splash/bootstrap window first, destroys it,
+then creates the real game window on the same thread.  From that point on no
+composition ever reaches the game (WINEDEBUG=+imm shows the UI window's
+WM_DESTROY early on, and ime_ui_notify() never being called afterwards).
+
+Treat a dead cached handle like no handle and create a fresh UI window, owned
+by the current default IME window.
+
+--- a/dlls/imm32/imm.c
++++ b/dlls/imm32/imm.c
+@@ -945,6 +945,9 @@ static HWND get_ime_ui_window(void)
+ 
+     if (!(ime = imc_select_ime( imc ))) return 0;
+ 
++    /* the UI window is owned by the default IME window and dies with it */
++    if (imc->ui_hwnd && !IsWindow( imc->ui_hwnd )) imc->ui_hwnd = 0;
++
+     if (!imc->ui_hwnd)
+     {
+         imc->ui_hwnd = CreateWindowExW( WS_EX_TOOLWINDOW, ime->ui_class, NULL, WS_POPUP, 0, 0, 1, 1,

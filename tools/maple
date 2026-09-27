@@ -1,0 +1,114 @@
+#!/bin/bash
+# maple — 一個指令從開遊戲到登入。裝法:ln -sf "$PWD/tools/maple" ~/.local/bin/maple
+#   maple            開遊戲(gamescope)→ 等登入表單出現、鑄 OTP 打進去
+#   maple game       只開遊戲
+#   maple login      只鑄 OTP 打進去(遊戲要已開、停在登入表單)
+#   maple stop       關遊戲(wineserver -k)
+#   maple status     遊戲 / wineserver 在不在
+#   maple qr         強制重掃 QR(= maple-login login)
+#   maple session    session 還活著嗎(= maple-login status)
+#   其他一律原樣轉給 maple-login:maple otp / forget / keepalive / --name … 都照舊能用
+#
+# 多開:前面加 -2 ~ -9 就是第 N 組,其餘用法完全一樣
+#   maple -2 setup   建第 2 組(一次就好):遊戲目錄 Data/ hardlink、其餘複製(約 600MB),寫 env-2.sh,建 prefix
+#   maple -2         開第 2 組並登入;maple -2 stop / status / login …
+#   每組各記各的「上次選的帳號」。
+# 設定檔:$MAPLE_ENV(預設 ~/.config/maplestory-tw/env.sh,從 env.example 複製;第 N 組是 env-N.sh),不用 source。
+set -euo pipefail
+HERE=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)     # 經 ~/.local/bin 的 symlink 也找得到 repo
+CFG=${XDG_CONFIG_HOME:-$HOME/.config}/maplestory-tw
+
+# 建第 N 組:從主設定的遊戲目錄分出一份,prefix 全新
+setup_instance() {
+    local n=$1 envf=$CFG/env-$1.sh data
+    [ -e "$envf" ] && { echo "第 $n 組已經有了($envf);要重建先刪它" >&2; return 1; }
+    source "$CFG/env.sh"
+    data=${MAPLE_DATA:-${XDG_DATA_HOME:-$HOME/.local/share}/maplestory-tw}/instances/$n
+    [ -f "$GAME_DIR/MapleStory.exe" ] || { echo "主設定的 GAME_DIR 裡沒有 MapleStory.exe:$GAME_DIR" >&2; return 1; }
+    [ -e "$data/game" ] && { echo "$data/game 已經存在;要重建先刪它" >&2; return 1; }
+    mkdir -p "$data/game"
+    echo "== 遊戲目錄 → $data/game"
+    # Data/(68GB)執行時不會被寫 → hardlink 不佔空間;其餘(BlackCipher 的 log 等)會被寫,真的複製。截圖不帶。
+    cp -al "$GAME_DIR/Data" "$data/game/" || {
+        echo "hardlink 失敗(遊戲目錄跟 $data 不在同一個檔案系統?)。把 MAPLE_DATA 設到同一顆碟上再試" >&2; return 1; }
+    (cd "$GAME_DIR" && for e in *; do
+        case $e in Data|Maple_*.jpg) ;; *) cp -a "$e" "$data/game/" ;; esac
+    done)
+    {
+        echo "# maple -$n 的設定:沿用主設定(wine、字型、gamescope…),只換 prefix 與遊戲目錄。$(date +%F) 由 maple -$n setup 產生"
+        echo "source \"$CFG/env.sh\""
+        echo "export WINEPREFIX=\"$data/prefix\""
+        echo "export GAME_DIR=\"$data/game\""
+    } > "$envf"
+    echo "== 設定檔 → $envf"
+    (source "$envf" && "$HERE/../prefix/setup-prefix.sh")
+    echo "完成。開:maple -$n"
+}
+
+# -N = 第 N 組:換成 env-N.sh,其餘照舊
+if [[ ${1:-} =~ ^-([2-9])$ ]]; then
+    export MAPLE_INSTANCE=${BASH_REMATCH[1]}
+    shift
+    if [ "${1:-}" = setup ]; then setup_instance "$MAPLE_INSTANCE"; exit; fi
+    export MAPLE_ENV=$CFG/env-$MAPLE_INSTANCE.sh
+    [ -f "$MAPLE_ENV" ] || { echo "第 $MAPLE_INSTANCE 組還沒建:maple -$MAPLE_INSTANCE setup" >&2; exit 1; }
+    unset WINE_ROOT WINEPREFIX GAME_DIR          # 一定重載,不吃外面 source 過的主設定
+fi
+
+if [ -z "${WINE_ROOT:-}" ]; then
+    source "${MAPLE_ENV:-$CFG/env.sh}"
+fi
+: "${WINE_ROOT:?}" "${WINEPREFIX:?}" "${GAME_DIR:?}"
+
+# 只算「這個 prefix」的行程(看 /proc/<pid>/environ):多開時每個實例一份 env.sh,互不干擾
+ours() {
+    local p
+    for p in $(pgrep "$@"); do
+        tr '\0' '\n' <"/proc/$p/environ" 2>/dev/null | grep -qxF "WINEPREFIX=$WINEPREFIX" && return 0
+    done
+    return 1
+}
+game_running() { ours -f 'MapleStory\.exe'; }
+ws_running()   { ours -x wineserver; }
+
+cmd_game() {
+    if game_running; then echo "遊戲已經在跑,不重開"; return 0; fi
+    if ws_running; then
+        echo "wineserver 還活著但沒遊戲 → 先殺,不然 explorer 的 desktop 留在錯的 display"
+        "$HERE/kill-prefix.sh"
+    fi
+    local log=$HOME/.cache/maplestory-tw/gs${MAPLE_INSTANCE:+-$MAPLE_INSTANCE}-$(date +%m%d-%H%M%S).log
+    mkdir -p "$(dirname "$log")"
+    MAPLE_LOG=$log setsid -f "$HERE/gs-run.sh" >>"$log" 2>&1     # setsid:Ctrl-C 這個終端機不會連遊戲一起殺
+    echo "遊戲啟動中(gamescope)。log → $log"
+}
+
+cmd_login() {
+    game_running || { echo "遊戲沒在跑;先 maple game" >&2; return 1; }
+    "$HERE/maple-login" --wait-game 240 "$@"     # 等登入表單最多 4 分鐘,出現才鑄 OTP,不跟 2 分鐘窗口賽跑
+}
+
+cmd_stop() {
+    ws_running || { echo "沒有在跑的 wineserver"; return 0; }
+    "$HERE/kill-prefix.sh" && echo "已關閉"
+}
+
+cmd_status() {
+    printf '%-12s %s\n' 組別       "第 ${MAPLE_INSTANCE:-1} 組" \
+                        遊戲       "$(game_running && echo 在跑 || echo 沒有)" \
+                        wineserver "$(ws_running   && echo 在跑 || echo 沒有)" \
+                        WINE_ROOT  "$WINE_ROOT" \
+                        WINEPREFIX "$WINEPREFIX"
+}
+
+case "${1:-}" in
+    "")      cmd_game; cmd_login || echo "自動登入沒做成,自己登" ;;
+    game)    shift; cmd_game "$@" ;;
+    login)   shift; cmd_login "$@" ;;
+    stop)    cmd_stop ;;
+    status)  cmd_status ;;
+    qr)      shift; exec "$HERE/maple-login" login  "$@" ;;
+    session) shift; exec "$HERE/maple-login" status "$@" ;;
+    -h|--help|help) awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "$0" ;;
+    *)       exec "$HERE/maple-login" "$@" ;;                 # otp / forget / keepalive / --name … 不再自己維護第二張表
+esac

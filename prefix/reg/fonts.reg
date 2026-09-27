@@ -1,0 +1,24 @@
+Windows Registry Editor Version 5.00
+
+; 這個 prefix 是 CP950 / zh-TW。以下字面名在「請求 charset=136(Big5)」時,
+; 不是字型不存在(Dotum/Gulim),就是字型存在但沒有 Big5 字碼頁位元(SimSun/NSimSun/Courier)。
+; 兩種情況 Windows 的 font mapper 都會退回系統預設中文字型 = 新細明體 / 細明體,
+; 而 wine 是退給 fontconfig → Noto Sans CJK TC(行高 1.448 em、而且會被抗鋸齒)。
+; 實測來源:WINEDEBUG=+font 追蹤 —— 遊戲確實會送出 simsun / Nsimsun / Courier + charset=136 的請求。
+;
+; 注意:wine 載入字型時會用字型自己的英文別名先註冊代換(先到先贏),登錄檔裡的代換會輸。
+; 所以 simsun.ttc / simsunb.ttf / SimsunExtG.ttf 必須「不要裝進 prefix」,"SimSun"="PMingLiU" 才會生效。
+; setup-prefix.sh 會自動排除它們。
+[HKEY_LOCAL_MACHINE\Software\Microsoft\Windows NT\CurrentVersion\FontSubstitutes]
+"Dotum"="PMingLiU"
+"DotumChe"="MingLiU"
+"Gulim"="PMingLiU"
+"GulimChe"="MingLiU"
+"SimSun"="PMingLiU"
+"NSimSun"="MingLiU"
+"Courier"="MingLiU"
+
+; 遊戲會要 weight=700 的新細明體,它沒有 Bold 字面 → wine 做 fake bold,
+; 預設會強制抗鋸齒跳過 GASP。Windows 是把點陣圖位移疊加、仍然 1-bit。
+[HKEY_CURRENT_USER\Software\Wine\Fonts]
+"AntialiasFakeBoldOrItalic"="n"

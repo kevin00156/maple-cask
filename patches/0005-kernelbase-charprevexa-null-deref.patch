@@ -1,0 +1,32 @@
+kernelbase: Don't dereference start before the bounds check in CharPrevExA.
+
+CharPrevExA() evaluates *start before it has established that start is below
+ptr, so a call with start == ptr crashes instead of returning start.  The
+NULL/NULL case is the one that shows up in the wild: MapleStory TW calls
+CharPrevExA(950, NULL, NULL, 0) while building its login screen and takes an
+access violation inside kernelbase, which its own crash handler swallows --
+the game then exits silently a few seconds later with a black window and no
+Wine-side diagnostic at all.
+
+Windows returns ptr for this call.  Put the bounds check back in front so the
+dereference can only happen once start is known to be a valid, in-range
+pointer.
+
+The wrong order is not new: wine-10.0 has it too, and the game crashes there in
+exactly the same way (verified by building wine-10.0 and watching Nexon's own
+crash reporter record c0000005 thirteen seconds in).  CrossOver carries the
+same one-line fix in its tree, which is why the game never crashed there.
+
+
+diff --git a/dlls/kernelbase/string.c b/dlls/kernelbase/string.c
+--- a/dlls/kernelbase/string.c
++++ b/dlls/kernelbase/string.c
+@@ -1138,7 +1138,7 @@
+ 
+ LPSTR WINAPI CharPrevExA(WORD codepage, const char *start, const char *ptr, DWORD flags)
+ {
+-    while (*start && (start < ptr))
++    while ((start < ptr) && *start)
+     {
+         LPCSTR next = CharNextExA(codepage, start, flags);
+         if (next >= ptr) break;

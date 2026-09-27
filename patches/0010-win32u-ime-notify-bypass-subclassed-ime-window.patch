@@ -1,0 +1,46 @@
+win32u: Deliver internal IME notifications to the builtin IME window procedure.
+
+post_ime_update() defers composition updates coming from the display driver by
+posting WM_WINE_IME_NOTIFY to the focus window; handle_internal_message() then
+relays it as WM_IME_NOTIFY(IMN_WINE_SET_COMP_STRING) to the thread's default IME
+window through send_message().  That goes through whatever window procedure the
+default IME window *currently* has -- and applications are allowed to subclass
+it.
+
+MapleStory (Nexon) does exactly that: once its main window is up it replaces the
+default IME window's procedure with one that only calls DefWindowProc().  On
+Windows this is harmless, because the real IME never routes composition results
+through the default IME window.  On Wine it silently drops every composition and
+result string: __wine_ime_wnd_proc() -> ime_ui_notify() -> ime_set_comp_string()
+-> ImeToAsciiEx() are never reached, so the application never receives
+WM_IME_COMPOSITION and nothing typed through XIM/fcitx ever shows up in-game.
+
+Evidence (WINEDEBUG=+imm,+xim on the game): every post_ime_update() is followed
+by get_default_ime_window() for the focus window (so the internal message *is*
+dequeued and passes the parent check), but __wine_ime_wnd_proc() sees nothing
+after WM_ACTIVATEAPP, while DefWindowProc()'s WM_IME_NOTIFY handler runs on the
+IME window instead.
+
+This is a Wine-internal notification, so dispatch it to the builtin IME class
+procedure directly, the same way NtUserDispatchMessage() dispatches to an
+explicit callback.  The default IME window belongs to the current thread, so a
+direct dispatch is safe.
+
+--- a/dlls/win32u/message.c
++++ b/dlls/win32u/message.c
+@@ -2158,9 +2158,14 @@ static LRESULT handle_internal_message( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam )
+         return FALSE;
+     case WM_WINE_IME_NOTIFY:
+     {
++        struct win_proc_params params = {.func = BUILTIN_WINPROC( NTUSER_WNDPROC_IME )};
+         HWND ime_hwnd = get_default_ime_window( hwnd );
+         if (!ime_hwnd || ime_hwnd == NtUserGetParent( hwnd )) return 0;
+-        return send_message( ime_hwnd, WM_IME_NOTIFY, wparam, lparam );
++        /* The application may have subclassed the default IME window (MapleStory does, and its
++         * procedure never forwards to the original one).  This is a Wine-internal notification,
++         * so bypass the window's current procedure and call the builtin IME one directly. */
++        if (!init_win_proc_params( &params, ime_hwnd, WM_IME_NOTIFY, wparam, lparam, FALSE )) return 0;
++        return dispatch_win_proc_params( &params, sizeof(params), NULL, NULL );
+     }
+     case WM_WINE_WINDOW_STATE_CHANGED:
+     {
