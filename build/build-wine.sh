@@ -37,7 +37,7 @@ for tool in x86_64-w64-mingw32-gcc i686-w64-mingw32-gcc pkg-config curl sha256su
 done
 if [ -n "$missing" ]; then
     echo "缺:$missing"
-    echo "Ubuntu/Debian:sudo apt install build-essential pkg-config mingw-w64 curl xz-utils,再加上編上游 wine 需要的那些(見 README)"
+    echo "Ubuntu/Debian:sudo apt install build-essential pkg-config mingw-w64 curl xz-utils,再加上編上游 wine 需要的那些(見 docs/building.md)"
     exit 1
 fi
 
@@ -75,10 +75,15 @@ make install
 echo "== 4. DXVK + vkd3d-proton(取自 $GE_VERSION)=="
 if [ ! -d "$GE_DIR/files/lib/wine/dxvk" ]; then
     mkdir -p "$BUILD_DIR/ge"
-    tarball=$BUILD_DIR/ge/$GE_VERSION.tar.gz
-    [ -f "$tarball" ] || curl -L -o "$tarball" \
-        "https://github.com/GloriousEggroll/proton-ge-custom/releases/download/$GE_VERSION/$GE_VERSION.tar.gz"
-    tar -C "$BUILD_DIR/ge" -xzf "$tarball"
+    # 資產檔名帶架構後綴(GE-Proton11-6-x86_64.tar.gz);同名的 .sha512sum 是官方校驗碼
+    name=$GE_VERSION-x86_64.tar.gz
+    base=https://github.com/GloriousEggroll/proton-ge-custom/releases/download/$GE_VERSION
+    if [ ! -f "$BUILD_DIR/ge/$name" ]; then
+        curl -fL --retry 3 -o "$BUILD_DIR/ge/$name.part" "$base/$name"
+        mv "$BUILD_DIR/ge/$name.part" "$BUILD_DIR/ge/$name"
+    fi
+    curl -fsL --retry 3 "$base/$GE_VERSION-x86_64.sha512sum" | (cd "$BUILD_DIR/ge" && sha512sum -c -)
+    tar -C "$BUILD_DIR/ge" -xzf "$BUILD_DIR/ge/$name"
     GE_DIR=$(ls -d "$BUILD_DIR/ge"/GE-Proton*/ | head -1)
 fi
 cp -a "$GE_DIR/files/lib/wine/dxvk" "$GE_DIR/files/lib/wine/vkd3d-proton" "$OUT/lib/wine/"
