@@ -1,4 +1,4 @@
-# 已知問題與限制(v0.1)
+# 已知問題與限制
 
 ## 一定要經 gamescope(`tools/gs-run.sh` / `maple`)
 直接在桌面的 X(或 KDE Wayland 的 Xwayland)上跑 `run.sh`,遊戲**常常在畫出登入畫面之前**就彈
@@ -41,7 +41,7 @@ wine 本身可以共用。
 
 ## 不能從 Steam 介面直接選(沒有 Proton compatibilitytool)
 經過 Proton 的 `proton` 啟動腳本遊戲會秒死(`invalid frame (0x12000-0x12000)`),根因未查。
-v0.1 只提供 Lutris / Heroic 式的 wine runner(直接執行 `bin/wine`)。
+目前只提供 Lutris / Heroic 式的 wine runner(直接執行 `bin/wine`)。
 
 ## 遊戲檔取得不在範圍內
 你需要一份**現成的** MapleStory 目錄(約 70GB)。橘子官方安裝程式在 wine 下**沒測過**;

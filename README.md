@@ -22,7 +22,7 @@
   OTP 協定的作法參考自 [pungin/Beanfun](https://github.com/pungin/Beanfun)(第三方 beanfun 客戶端);
   本專案照它的協定行為以 Python 重寫,未複製其原始碼,細節見
   [docs/how-it-works.md §11](docs/how-it-works.md)。
-- ❌ **不處理遊戲下載 / 安裝**(v0.1)。你需要一份現成的 MapleStory 目錄。
+- ❌ **不處理遊戲下載 / 安裝**。你需要一份現成的 MapleStory 目錄。
 - ❌ 不含任何遊戲檔、微軟字型、微軟 DLL、橘子的程式。
 - ❌ **不提供、也不接受任何遊戲內自動化**(巨集、自動戰鬥、外掛類功能)。唯一會對遊戲送輸入的是
   登入表單的自動填入,跟你自己貼上帳號與 OTP 是同一件事。

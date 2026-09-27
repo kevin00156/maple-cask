@@ -11,7 +11,7 @@ wine 的 ACP 是 `wineboot` 建 prefix 時從 locale 決定、寫進
 `HKLM\System\CurrentControlSet\Control\Nls\CodePage\ACP` 的;**之後再改環境變數沒用**。
 所以 `setup-prefix.sh` 全程跑在 `LANG=LC_ALL=zh_TW.UTF-8`,建完會檢查 `system.reg` 裡 `"ACP"="950"`。
 
-(給 v0.2 的備忘:Proton 的 `proton` 啟動腳本會主動 pop 掉 `LC_ALL`,得改用 `HOST_LC_ALL` 才傳得進去。)
+(給之後要做 Steam compatibilitytool 的人:Proton 的 `proton` 啟動腳本會主動 pop 掉 `LC_ALL`,得改用 `HOST_LC_ALL` 才傳得進去。)
 
 ## 2. BlackCipher 的「乾淨複本比對」與 `.msf` patch(patches/0001)
 這是整個專案的核心,也是上游 wine 跑不起來的**唯一**根本原因。
@@ -49,7 +49,7 @@ NGS 照樣跑它所有的檢查,只是拿到它要的那個模組。這段程式
 同一顆 wine,經過 `proton run` 腳本啟動 → Themida 丟出的例外 unwind 之後 TEB 的堆疊界限變成零長度
 (`invalid frame ... (0x12000-0x12000)`),wine 拒絕 dispatch 例外,程序秒死。
 直接執行 `bin/wine MapleStory.exe` → 正常。是腳本設定的**某個環境**(Steam Runtime 容器 / 環境變數)造成的,
-根因未查。所以 v0.1 交付 Lutris / Heroic 式的 runner(它們直接執行 `bin/wine`),不做 Steam compatibilitytool。
+根因未查。所以目前交付 Lutris / Heroic 式的 runner(它們直接執行 `bin/wine`),不做 Steam compatibilitytool。
 
 ## 6. 圖形:DXVK、vkd3d-proton、`dxvk.conf`、NxOverlay
 - `d3d11 / d3d10core / dxgi / d3d9` 用 DXVK(64 與 32 位元都放,NGS 那側是 32 位元);`d3d12 / d3d12core` 用 vkd3d-proton。
