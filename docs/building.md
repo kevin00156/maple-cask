@@ -35,6 +35,9 @@ build/build-gamescope.sh                 # 裝到 ~/.local/share/maplestory-tw/g
 (gamescope 靠 PATH 找 `gamescopereaper`,找不到會秒退)。Ubuntu 26.04 實測;24.04 的系統函式庫太舊,不建議。
 為什麼需要 gamescope、這個 patch 做什麼:[how-it-works §13](how-it-works.md)。
 
+自己 build 的 runner 用法:`env.sh` 的 `WINE_ROOT` 指向 `build/out`。`maple update` 看到 `WINE_ROOT`
+不是 `runners/current` 就只更新腳本,runner 由你自己負責。
+
 ## 發版(CI)
 Releases 上的 tarball 就是 `build/build-wine.sh` 在 GitHub Actions(ubuntu-24.04)上跑出來的:
 推 `v*` tag(major.minor.patch,例如 `v0.0.2`)會觸發 [`.github/workflows/release.yml`](../.github/workflows/release.yml),
@@ -43,6 +46,7 @@ build 完連同 `SHA256SUMS` 掛到該版的 Release。在 Actions 頁手動 Run
 ## 檔案放哪
 repo 只放腳本、patch、文件;大檔預設在 `~/.local/share/maplestory-tw/`(可用 `MAPLE_DATA` 改):
 ```
+~/.local/share/maplestory-tw/runners/     maple update 下載的 runner:current → 在用的版本,previous → 上一版(--rollback 用)
 ~/.local/share/maplestory-tw/build/       build/build-wine.sh 的 build 目錄(out/ = wine runner)
 ~/.local/share/maplestory-tw/gamescope/   build/build-gamescope.sh 的安裝目錄
 ~/.local/share/maplestory-tw/instances/   多開的第 2~9 組(maple -N setup)

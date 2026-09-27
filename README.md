@@ -27,17 +27,16 @@ maple-cask(楓木桶)—— 讓台版新楓之谷在 Linux 上跑起來。名字
 
 ## 安裝
 ```bash
-# 1. wine runner:從 Releases 下載 maplestory-tw-wine-*.tar.xz,解開到任何地方
-tar -C ~/.local/share -xJf maplestory-tw-wine-*.tar.xz
+git clone https://github.com/kevin00156/maple-cask.git && cd maple-cask
 
-# 2. 設路徑:WINE_ROOT 指向上一步解出來的目錄,再填 WINEPREFIX、GAME_DIR、FONTS_DIR
+# 1. 設路徑:填 GAME_DIR(必填)、FONTS_DIR;WINE_ROOT 保持預設 = 交給 maple update 管
 mkdir -p ~/.config/maplestory-tw
 cp env.example ~/.config/maplestory-tw/env.sh && $EDITOR ~/.config/maplestory-tw/env.sh
 
-# 3. 建 prefix(可重複執行)
-source ~/.config/maplestory-tw/env.sh && prefix/setup-prefix.sh
+# 2. 下載 wine runner(Releases 最新版,校驗 SHA256)並建 prefix
+tools/maple update
 
-# 4. 把 maple 放進 PATH
+# 3. 把 maple 放進 PATH
 ln -sf "$PWD/tools/maple" ~/.local/bin/maple
 ```
 想自己編 wine,或要看得到中文輸入法的候選窗:[docs/building.md](docs/building.md)。
@@ -53,6 +52,16 @@ maple help                # 全部指令
 - 多開:`maple -2 setup` 一次,之後 `maple -2`(`-2`~`-9`)。
 - 全螢幕 / 改解析度:`GS_ARGS="-W 1366 -H 768 -f" maple game`。
 - 用 Lutris / Heroic:執行檔設成 `tools/gs-run.sh`(不是 wine 本身),環境變數照 `env.sh` 填。
+
+## 更新
+`maple` 開遊戲時一天查一次有沒有新 Release,有的話會印一行。要更新:
+```bash
+maple stop && maple update    # 腳本 git 快轉、下載新 runner、每一組 prefix 重跑 setup
+maple update --rollback       # 新 runner 有問題:退回上一版(只留一版)
+```
+- 腳本只有在你沒改過追蹤中的檔案時才更新;runner 只有在 `WINE_ROOT` 是預設的 `runners/current` 時才更新。
+  不符合的那一項會跳過並說明原因,不會動你自己的東西。
+- 腳本要一起退版:`git checkout v0.0.1`(換成要的版本);回來用 `git checkout main && maple update`。
 
 遇到問題先看 [docs/known-issues.md](docs/known-issues.md)。
 

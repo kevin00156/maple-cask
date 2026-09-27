@@ -7,7 +7,10 @@
 #   maple status     遊戲 / wineserver 在不在
 #   maple qr         強制重掃 QR(= maple-login login)
 #   maple session    session 還活著嗎(= maple-login status)
+#   maple update     更新腳本 + runner 到最新 Release(--rollback 退 runner;不分組別,一次全部)
 #   其他一律原樣轉給 maple-login:maple otp / forget / keepalive / --name … 都照舊能用
+#
+# 開遊戲時一天查一次有沒有新版,有就印一行,不擋。
 #
 # 多開:前面加 -2 ~ -9 就是第 N 組,其餘用法完全一樣
 #   maple -2 setup   建第 2 組(一次就好):遊戲目錄 Data/ hardlink、其餘複製(約 600MB),寫 env-2.sh,建 prefix
@@ -17,6 +20,9 @@
 set -euo pipefail
 HERE=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)     # 經 ~/.local/bin 的 symlink 也找得到 repo
 CFG=${XDG_CONFIG_HOME:-$HOME/.config}/maplestory-tw
+
+# update 在載入 env 之前:第一次安裝時 WINE_ROOT 指的 runner 還不存在
+if [ "${1:-}" = update ]; then shift; exec "$HERE/maple-update" "$@"; fi
 
 # 建第 N 組:從主設定的遊戲目錄分出一份,prefix 全新
 setup_instance() {
@@ -81,6 +87,7 @@ cmd_game() {
     mkdir -p "$(dirname "$log")"
     MAPLE_LOG=$log setsid -f "$HERE/gs-run.sh" >>"$log" 2>&1     # setsid:Ctrl-C 這個終端機不會連遊戲一起殺
     echo "遊戲啟動中(gamescope)。log → $log"
+    "$HERE/maple-update" --check || true      # 遊戲開機的空檔順便查;沒網路就安靜跳過
 }
 
 # 等登入表單最多 4 分鐘,出現才鑄 OTP,不跟 2 分鐘窗口賽跑。遊戲行程還沒起來也照等(maple 剛開完遊戲就是這樣)

@@ -1,0 +1,178 @@
+#!/bin/bash
+# maple-update — 把腳本、wine runner、prefix 一起帶到最新 Release。經 `maple update` 呼叫。
+#   maple update             更新(遊戲要先關;多開的每一組一起)
+#   maple update --check     只查、有新版印一行;一天真的查一次(maple 開遊戲時自動跑)
+#   maple update --rollback  runner 退回上一版(腳本不動)
+#
+# 什麼會被更新,各自一條規則,不看你是誰:
+#   腳本   = 這個 git clone 的 HEAD 在最新 tag 的歷史上、追蹤中的檔案沒被改 → git merge --ff-only
+#   runner = env.sh 的 WINE_ROOT 指向 $MAPLE_DATA/runners/current → 下載、校驗、解開、換 symlink
+#   不符合的那項就跳過並說原因;自己 build / 自己放 runner 的人不會被動到。
+# 有任何東西換了,每一組都重跑 prefix/setup-prefix.sh:它會把 runner 裡的 DXVK 複製進 prefix,不重跑就還是舊的。
+set -euo pipefail
+HERE=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
+REPO=$(dirname "$HERE")
+CFG=${XDG_CONFIG_HOME:-$HOME/.config}/maplestory-tw
+MAIN_ENV=${MAPLE_ENV:-$CFG/env.sh}
+RUNNERS=${MAPLE_DATA:-${XDG_DATA_HOME:-$HOME/.local/share}/maplestory-tw}/runners
+CACHE=${XDG_CACHE_HOME:-$HOME/.cache}/maplestory-tw
+STAMP=$CACHE/update-check
+DEFAULT_SLUG=kevin00156/maple-cask
+
+die() { echo "$*" >&2; exit 1; }
+
+# 主設定 + 多開的 env-N.sh
+envs() { ls -d "$MAIN_ENV" "$CFG"/env-[2-9].sh 2>/dev/null || true; }
+
+# 在乾淨環境裡 source 一份 env,印出某個變數
+envvar() { env -u WINE_ROOT -u WINEPREFIX -u GAME_DIR bash -c 'source "$1" >/dev/null && printf %s "${!2:-}"' _ "$1" "$2"; }
+
+# 有行程在用 runners/ 裡的 wine,或任何一組的 wineserver 還活著
+busy() {
+    local f pfx p
+    pgrep -f "$RUNNERS/" >/dev/null && return 0
+    for f in $(envs); do
+        pfx=$(envvar "$f" WINEPREFIX)
+        for p in $(pgrep -x wineserver); do
+            tr '\0' '\n' <"/proc/$p/environ" 2>/dev/null | grep -qxF "WINEPREFIX=$pfx" && return 0
+        done
+    done
+    return 1
+}
+
+# 最新 Release:印「tag tarball檔名 tarball網址 SHA256SUMS網址」。用 Release 不用 git tag:
+# tag 推上去後 CI 還要跑 40 分鐘 tarball 才出現。fork 的人就追自己 fork 的 Release。
+latest() {
+    local slug
+    slug=$(git -C "$REPO" remote get-url origin 2>/dev/null | sed -nE 's#.*github\.com[:/](.*)$#\1#p' | sed 's/\.git$//')
+    curl -fsS --max-time 10 "https://api.github.com/repos/${slug:-$DEFAULT_SLUG}/releases/latest" | python3 -c '
+import json, sys
+r = json.load(sys.stdin)
+url = {a["name"]: a["browser_download_url"] for a in r["assets"]}
+tar = next(n for n in url if n.endswith(".tar.xz"))
+print(r["tag_name"], tar, url[tar], url["SHA256SUMS"])'
+}
+
+# 腳本能 fast-forward 到 $1 就什麼都不印;不能就印原因
+scripts_why() {
+    git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1 || { echo "不是 git clone"; return; }
+    timeout 20 git -C "$REPO" fetch -q origin "refs/tags/$1:refs/tags/$1" 2>/dev/null || { echo "git fetch 失敗"; return; }
+    git -C "$REPO" merge-base --is-ancestor "$1" HEAD && { echo "已包含 $1"; return; }
+    git -C "$REPO" merge-base --is-ancestor HEAD "$1" || { echo "目前的分支不在 $1 的歷史上,不動"; return; }
+    git -C "$REPO" diff --quiet HEAD || { echo "有未 commit 的改動,不動"; return; }
+}
+
+# runner 該換成 $1 就什麼都不印;不該就印原因
+runner_why() {
+    local root
+    root=$(envvar "$MAIN_ENV" WINE_ROOT)
+    [ "$(readlink -m "$root")" = "$(readlink -m "$RUNNERS/current")" ] ||
+        { echo "WINE_ROOT=$root 由你自己管(要交給 maple update 就改成 $RUNNERS/current)"; return; }
+    [ "$(readlink "$RUNNERS/current" 2>/dev/null)" = "$1" ] && echo "已是 $1"
+    return 0
+}
+
+# 下載、校驗、解到 runners/$1。先解進 .tmp 再改名:中途失敗不會留下半套 runner
+install_runner() {
+    local name=$1 dl=$CACHE/download
+    [ -d "$RUNNERS/$name" ] && return
+    mkdir -p "$dl" "$RUNNERS"
+    echo "== 下載 $name"
+    curl -fL --progress-bar -o "$dl/$name.tar.xz" "$2"
+    curl -fsSL -o "$dl/SHA256SUMS" "$3"
+    (cd "$dl" && grep -F "  $name.tar.xz" SHA256SUMS | sha256sum -c -) || die "校驗失敗,什麼都沒改"
+    rm -rf "$RUNNERS/$name.tmp"
+    mkdir "$RUNNERS/$name.tmp"
+    tar -C "$RUNNERS/$name.tmp" --strip-components=1 -xJf "$dl/$name.tar.xz"
+    mv "$RUNNERS/$name.tmp" "$RUNNERS/$name"
+    rm -f "$dl/$name.tar.xz"
+}
+
+# 原子地把 runners/$1 這條 symlink 指到 $2
+point() { ln -sfn "$2" "$RUNNERS/$1.new" && mv -T "$RUNNERS/$1.new" "$RUNNERS/$1"; }
+
+# current 與 previous 以外的 runner(含中斷留下的 .tmp)都刪掉
+prune() {
+    local d keep
+    keep=" $(readlink "$RUNNERS/current" || true) $(readlink "$RUNNERS/previous" || true) "
+    for d in "$RUNNERS"/maplestory-tw-wine-*; do
+        [[ $keep == *" ${d##*/} "* ]] || rm -rf "$d"
+    done
+}
+
+refresh_prefixes() {
+    local f
+    for f in $(envs); do
+        echo "== setup-prefix($f)"
+        env -u WINE_ROOT -u WINEPREFIX -u GAME_DIR bash -c 'source "$1" && exec "$2"' _ "$f" "$REPO/prefix/setup-prefix.sh"
+    done
+}
+
+check() {
+    local tag tar _
+    if [ -n "$(find "$STAMP" -mmin -1440 2>/dev/null)" ]; then cat "$STAMP"; return; fi
+    [ -f "$MAIN_ENV" ] || return 0
+    read -r tag tar _ < <(latest 2>/dev/null) || return 0     # 沒網路就安靜跳過,也不寫快取
+    mkdir -p "$CACHE"
+    if [ -z "$(scripts_why "$tag")" ] || [ -z "$(runner_why "${tar%.tar.xz}")" ]; then
+        echo "有新版 $tag:maple update(先關遊戲)" >"$STAMP"
+    else
+        : >"$STAMP"
+    fi
+    cat "$STAMP"
+}
+
+update() {
+    local tag tar tarurl sumsurl name swhy rwhy old
+    [ -f "$MAIN_ENV" ] || die "沒有 $MAIN_ENV:先從 env.example 複製過去填好(見 README)"
+    busy && die "遊戲或 wineserver 還在跑,先 maple stop(多開的每一組都要)"
+    read -r tag tar tarurl sumsurl < <(latest) || true
+    [ -n "${sumsurl:-}" ] || die "查不到最新 Release(沒網路?)"
+    name=${tar%.tar.xz}
+    swhy=$(scripts_why "$tag")
+    rwhy=$(runner_why "$name")
+    echo "最新 Release:$tag"
+    echo "  腳本:  ${swhy:-→ $tag}"
+    echo "  runner:${rwhy:-→ $name}"
+    rm -f "$STAMP"
+    [ -z "$swhy" ] || [ -z "$rwhy" ] || return 0
+
+    [ -n "$rwhy" ] || install_runner "$name" "$tarurl" "$sumsurl"
+    if [ -z "$swhy" ]; then
+        old=$(git -C "$REPO" rev-parse HEAD)
+        git -C "$REPO" merge -q --ff-only "$tag"
+        git -C "$REPO" diff --quiet "$old" HEAD -- build/GAMESCOPE_VERSION build/build-gamescope.sh 'patches/gamescope-*' ||
+            echo "注意:gamescope 的 patch 有變。有自己 build gamescope 的話,重跑 build/build-gamescope.sh"
+    fi
+    if [ -z "$rwhy" ] && [ "$(readlink "$RUNNERS/current" || true)" != "$name" ]; then
+        [ -e "$RUNNERS/current" ] && point previous "$(readlink "$RUNNERS/current")"
+        point current "$name"
+        prune
+    fi
+    refresh_prefixes
+    echo "完成:$tag"
+}
+
+rollback() {
+    local cur prev
+    busy && die "遊戲或 wineserver 還在跑,先 maple stop(多開的每一組都要)"
+    cur=$(readlink "$RUNNERS/current" || true)
+    prev=$(readlink "$RUNNERS/previous" || true)
+    [ -n "$prev" ] && [ -d "$RUNNERS/$prev" ] || die "沒有上一版 runner 可以退"
+    point current "$prev"
+    point previous "$cur"
+    echo "runner:$cur → $prev"
+    refresh_prefixes
+    echo "腳本沒動;要一起退:git -C $REPO checkout <舊的 tag>(之後 git checkout main 再 maple update 回來)"
+}
+
+# 整支包在函式裡、最後一行才執行:git merge 會在執行中途換掉這個檔案,bash 得先讀完整份
+main() {
+    case "${1:-}" in
+        "")         update ;;
+        --check)    check ;;
+        --rollback) rollback ;;
+        *)          awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "$0"; exit 2 ;;
+    esac
+}
+main "$@"; exit
