@@ -83,9 +83,12 @@ cmd_game() {
     echo "遊戲啟動中(gamescope)。log → $log"
 }
 
+# 等登入表單最多 4 分鐘,出現才鑄 OTP,不跟 2 分鐘窗口賽跑。遊戲行程還沒起來也照等(maple 剛開完遊戲就是這樣)
+wait_login() { "$HERE/maple-login" --wait-game 240 "$@"; }
+
 cmd_login() {
     game_running || { echo "遊戲沒在跑;先 maple game" >&2; return 1; }
-    "$HERE/maple-login" --wait-game 240 "$@"     # 等登入表單最多 4 分鐘,出現才鑄 OTP,不跟 2 分鐘窗口賽跑
+    wait_login "$@"
 }
 
 cmd_stop() {
@@ -102,7 +105,7 @@ cmd_status() {
 }
 
 case "${1:-}" in
-    "")      cmd_game; cmd_login || echo "自動登入沒做成,自己登" ;;
+    "")      cmd_game; wait_login || echo "自動登入沒做成,自己登" ;;
     game)    shift; cmd_game "$@" ;;
     login)   shift; cmd_login "$@" ;;
     stop)    cmd_stop ;;

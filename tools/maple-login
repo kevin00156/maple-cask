@@ -698,22 +698,57 @@ def wine_ready() -> str | None:
     return None
 
 
-def wait_for_game_window(timeout_sec: int) -> bool:
-    """等遊戲的登入視窗出現。等到回 True。
+def has_https(pid: str) -> bool:
+    """這個行程有沒有一條 ESTABLISHED、連到對方 443 的 TCP。"""
+    inodes = set()
+    for fd in glob.glob(f"/proc/{pid}/fd/*"):
+        try:
+            link = os.readlink(fd)
+        except OSError:
+            continue
+        if link.startswith("socket:["):
+            inodes.add(link[8:-1])
+    for table in ("tcp", "tcp6"):
+        try:
+            with open(f"/proc/{pid}/net/{table}") as f:
+                rows = f.read().splitlines()[1:]
+        except OSError:
+            continue
+        for row in rows:
+            col = row.split()
+            # col[2] = 對方 ip:port(hex),col[3] = 狀態(01 = ESTABLISHED),col[9] = inode
+            if col[3] == "01" and col[2].endswith(":01BB") and col[9] in inodes:
+                return True
+    return False
 
-    給「先開遊戲、再鑄 OTP」這個順序用的:OTP 只有 2 分鐘的窗口,等表單真的
-    出現了才鑄,就不必跟 wine 啟動 + 遊戲載入那 30~60 秒賽跑。
-    偵測交給 mapletype.exe --wait,它每 250ms 用 EnumWindows 找一次。
+
+def wait_for_login_screen(timeout_sec: int) -> bool:
+    """等遊戲載到登入表單。等到回 True。
+
+    給「先開遊戲、再鑄 OTP」這個順序用的:OTP 只有 2 分鐘的窗口,表單出現了才鑄。
+    訊號是 MapleStory.exe 的第一條 :443 連線。2026-09-27 經 gamescope 實測:
+        視窗 t=4、8484 t=6(都在 NEXON Logo 之前,不能用)
+        第一條 443 t=33~36(5 輪),截圖對到的兩輪表單在 t=35~36 / ≤40(對方 IP 每次不同,只能看 port)
+        另兩輪載得慢(443 在 t=55/57),gamescopectl 截圖:命中那刻還在 LOADING,3 秒後表單已出現
+        ——所以不能用固定延遲,命中後那 3 秒也不能省。另有一輪 t=19 就命中,沒截到圖,原因未查明
+    驗證截圖用 GAMESCOPE_WAYLAND_DISPLAY=<遊戲的> gamescopectl screenshot <路徑.png>(不怕視窗被蓋)
+    以前等的是「視窗存在」,t=4 就放行,OTP 打進 Logo 畫面整張燒掉。
     """
-    if wine_ready():
-        return False
-    print(f"  等遊戲的登入視窗出現(最多 {timeout_sec} 秒)…", flush=True)
-    try:
-        r = subprocess.run(mapletype_cmd() + ["--wait", str(timeout_sec * 1000)],
-                           capture_output=True, timeout=timeout_sec + 30)
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return r.returncode == 0
+    print(f"  等遊戲載到登入表單(最多 {timeout_sec} 秒)…", flush=True)
+    deadline = time.monotonic() + timeout_sec
+    while time.monotonic() < deadline:
+        for pid in game_pids():
+            try:
+                with open(f"/proc/{pid}/cmdline", "rb") as f:
+                    if b"MapleStory.exe" not in f.read():
+                        continue   # BlackCipher 之類也 map 了遊戲目錄,但不是它
+            except OSError:
+                continue
+            if has_https(pid):
+                time.sleep(3)      # 命中時可能還在 LOADING,實測 3 秒內表單都出來了
+                return True
+        time.sleep(0.5)
+    return False
 
 
 def auto_type(acct: dict, otp: str, submit: bool, mode: str, gap: int = 0) -> str | None:
@@ -909,8 +944,8 @@ def cmd_otp(args) -> int:
             save_remembered(acct)  # 記住這次選的,下次不用再打 --name
         # 先選帳號再等視窗:不然人要乾等幾十秒才被問要用哪個帳號
         if args.wait_game:
-            if not wait_for_game_window(args.wait_game):
-                print("  沒等到視窗,還是照鑄(等一下會退回剪貼簿)")
+            if not wait_for_login_screen(args.wait_game):
+                print("  沒等到登入表單,還是照鑄(自己看畫面,打不進去就從剪貼簿貼)")
         otp = bfotp.get_otp(login.session, login.web_token, acct, *SERVICE)
     finally:
         login.close()
@@ -1028,7 +1063,7 @@ def main() -> int:
                     help="印完立刻啟動 run.sh(預設經 tools/gs-run.sh 進 gamescope;需要 WINE_ROOT / WINEPREFIX / GAME_DIR)")
     ap.add_argument("--no-clip", action="store_true", help="不要寫進剪貼簿")
     ap.add_argument("--wait-game", type=int, metavar="秒", default=0,
-                    help="先等遊戲的登入視窗出現再鑄 OTP(配合『先開遊戲』的流程)")
+                    help="先等遊戲載到登入表單再鑄 OTP(配合『先開遊戲』的流程)")
     ap.add_argument("--no-type", action="store_true",
                     help="就算遊戲開著也不要自動輸入,只複製")
     ap.add_argument("--no-submit", action="store_true",
