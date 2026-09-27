@@ -24,6 +24,14 @@ MIRROR=${MAPLE_MIRROR-https://dl.qazsskevin.org}
 
 die() { echo "$*" >&2; exit 1; }
 
+# 同時只能有一個 update / rollback:兩個一起跑會寫同一個 .part,互相弄壞(VM 驗收時真的發生過)。
+# 鎖在 fd 9,行程結束自動放;會常駐的子行程(wineserver)要用 9>&- 別把它帶走。
+lock() {
+    mkdir -p "$CACHE"
+    exec 9>"$CACHE/update.lock"
+    flock -n 9 || die "另一個 maple update 正在跑;等它結束再來"
+}
+
 # 主設定 + 多開的 env-N.sh
 envs() { ls -d "$MAIN_ENV" "$CFG"/env-[2-9].sh 2>/dev/null || true; }
 
@@ -96,7 +104,7 @@ install_runner() {
         echo "   校驗不符,丟掉這份"
         rm -f "$f" "$f.part"
     done
-    [ -f "$f" ] || die "下載失敗,什麼都沒改(重跑會從斷點接著下)"
+    [ -f "$f" ] || die "下載失敗,什麼都沒改;重跑會再試(有 .part 就從那裡接著下)"
     rm -rf "$RUNNERS/$name.tmp"
     mkdir "$RUNNERS/$name.tmp"
     tar -C "$RUNNERS/$name.tmp" --strip-components=1 -xJf "$dl/$name.tar.xz"
@@ -120,7 +128,7 @@ refresh_prefixes() {
     local f
     for f in $(envs); do
         echo "== setup-prefix($f)"
-        env -u WINE_ROOT -u WINEPREFIX -u GAME_DIR bash -c 'source "$1" && exec "$2"' _ "$f" "$REPO/prefix/setup-prefix.sh"
+        env -u WINE_ROOT -u WINEPREFIX -u GAME_DIR bash -c 'source "$1" && exec "$2"' _ "$f" "$REPO/prefix/setup-prefix.sh" 9>&-
     done
 }
 
@@ -141,6 +149,7 @@ check() {
 update() {
     local tag tar tarurl sumsurl mb name swhy rwhy old
     [ -f "$MAIN_ENV" ] || die "沒有 $MAIN_ENV:先從 env.example 複製過去填好(見 README)"
+    lock
     busy && die "遊戲或 wineserver 還在跑,先 maple stop(多開的每一組都要)"
     read -r tag tar tarurl sumsurl mb < <(latest) || true
     [ -n "${sumsurl:-}" ] || die "查不到最新 Release(沒網路?)"
@@ -171,6 +180,7 @@ update() {
 
 rollback() {
     local cur prev
+    lock
     busy && die "遊戲或 wineserver 還在跑,先 maple stop(多開的每一組都要)"
     cur=$(readlink "$RUNNERS/current" || true)
     prev=$(readlink "$RUNNERS/previous" || true)
