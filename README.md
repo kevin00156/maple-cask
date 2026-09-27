@@ -1,4 +1,6 @@
-# maplestory-tw-linux
+# MapleCask
+
+maple-cask(楓木桶)—— 讓台版新楓之谷在 Linux 上跑起來。名字取自楓木桶熟成的加拿大威士忌:甜,但是烈。
 
 讓**台版新楓之谷**(beanfun / 橘子)在 Linux 上跑起來的 wine runner + prefix 配方。
 
@@ -135,6 +137,10 @@ LGPL-2.1-or-later(與 wine 相同)。patch 是對 wine 的修改,本來就必須
 - **CodeWeavers / CrossOver** 與 **Nexon**:Nexon 官方 macOS 版建在 CrossOver 之上,並依 LGPL 公開了那棵 wine
   原始碼樹。`patches/0001`、`0002` 的作法直接來自那裡;開發初期也是以那棵樹自建的 wine 當「能玩」的對照組,
   才一路把問題縮小到今天這一組小 patch。沒有 CrossOver 的工作,這個專案不會存在。
+- [dspp779](https://github.com/dspp779) 的 [Cyder](https://github.com/dspp779/cyder-wine-engine) /
+  [CitrusGate](https://github.com/dspp779/CitrusGate) 與巴哈文章
+  〈[等不到台版官方支援，我讓新楓之谷在 Mac 上跑起來了](https://forum.gamer.com.tw/C.php?bsn=7650&snA=1037767)〉:
+  台版在 wine 上該打哪些 patch,是照著這篇的指引找到的。本專案是 Linux 版的移植,未複製其原始碼。
 - **WineHQ** 與所有 wine 開發者:本專案的 base 就是上游 wine。
 - [DXVK](https://github.com/doitsujin/dxvk)、[vkd3d-proton](https://github.com/HansKristian-Work/vkd3d-proton)
   (取自 [GE-Proton](https://github.com/GloriousEggroll/proton-ge-custom) 的建置)、
