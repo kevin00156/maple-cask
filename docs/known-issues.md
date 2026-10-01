@@ -88,6 +88,34 @@ wine 本身可以共用。
   虛擬桌面繞過,但那個設定從來沒生效過、修好了又不能全螢幕,已經拿掉;
   `prefix/reg/maplestory.reg` 會順手把舊 prefix 留下的鍵清掉。
 
+## SteamOS / Steam Deck:安裝流程能走完,遊戲畫面還沒驗證(2026-10-01,VM 實測)
+在 SteamOS 3.8.14 的 VM 裡照「安裝」一節逐字跑(官方 recovery 映像裝的,桌面模式下的 Konsole):
+
+| 項目 | 結果 |
+|---|---|
+| `maple update` 下載的 runner(v0.0.2) | ✅ 能跑(SteamOS 的 glibc 2.41 夠新) |
+| `zh_TW.UTF-8` locale → ACP 950 | ✅ SteamOS **預先編好了**,不用 `locale-gen` |
+| gamescope、xdotool、ss、python3 | ✅ 系統內建(gamescope 3.16.23) |
+| `winetricks` | ❌ **沒有**,`setup-prefix.sh` 第 4 步會停下來 |
+| `cabextract` | ❌ **沒有**,winetricks 裝 vcrun2022 要用 |
+
+SteamOS 的系統分割區是唯讀的,不能直接 `pacman -S`。兩個工具都放進 `~/.local/bin` 就行
+(winetricks 是一支 shell script;cabextract 從 Arch 套件解出 binary,只依賴 glibc):
+```bash
+mkdir -p ~/.local/bin && cd /tmp
+curl -sSLo ~/.local/bin/winetricks https://raw.githubusercontent.com/Winetricks/winetricks/master/src/winetricks
+f=$(curl -s https://archlinux.org/packages/extra/x86_64/cabextract/json/ | python3 -c 'import json,sys;print(json.load(sys.stdin)["filename"])')
+curl -sSLO https://geo.mirror.pkgbuild.com/extra/os/x86_64/$f && tar -xf $f usr/bin/cabextract
+install -m755 usr/bin/cabextract ~/.local/bin/ && chmod +x ~/.local/bin/winetricks
+export PATH=~/.local/bin:$PATH      # 然後重跑 tools/maple update(或 prefix/setup-prefix.sh)
+```
+補上這兩個之後,`setup-prefix.sh` 全部完成。
+
+**還沒驗證的(VM 測不了,要真機):** 遊戲本身能不能到登入畫面、Game Mode、加成「非 Steam 遊戲」。
+原因是 VM 的 GPU:SteamOS 沒有 NVIDIA 的 Vulkan 驅動(沒有 NVK),只能走 virtio-gpu venus;
+gamescope 在 venus 上合成視窗會 abort,遊戲直接開在桌面上也會在 DXVK 初始化附近退出。
+這些都發生在 VM 的虛擬 GPU 驅動裡,**不能**當成 Steam Deck(AMD)的結論。有 Deck 的人歡迎回報。
+
 ## NxOverlay 長時間穩定性(警告已降級)
 遊戲內嵌的 NxOverlay(`DwarfAxe.exe`)需要 `VK_KHR_external_memory_win32`,**只有 Valve 的 wine 有實作**,
 上游與 CrossOver 都沒有。本專案的 base 是上游 wine-10.16,所以沒有這個擴充。

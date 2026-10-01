@@ -62,7 +62,9 @@ echo "== 4. VC++ 2022 runtime(wine 沒有 vcruntime140_threads.dll,要用微軟�
 if [ -f "$SYS32/vcruntime140_threads.dll" ]; then
     echo "   已裝過"
 else
-    command -v winetricks >/dev/null || { echo "需要 winetricks(sudo apt install winetricks)"; exit 1; }
+    for t in winetricks cabextract; do
+        command -v $t >/dev/null || { echo "需要 $t(Ubuntu/Debian:sudo apt install $t;SteamOS 見 docs/known-issues.md「SteamOS」)"; exit 1; }
+    done
     winetricks -q vcrun2022
     "$WINESERVER" -w
 fi
