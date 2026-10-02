@@ -156,9 +156,25 @@ wine 沒有內建 `vcruntime140_threads.dll`。`setup-prefix.sh` 用 `winetricks
 
 **為什麼不能用帳密登入。** beanfun 對帳密流程掛了 reCAPTCHA:`Login/InitLogin` 會回報這個
 session 要不要過人機驗證,一旦要,`AccountLogin` 沒有 token 就一定失敗,而那個 token 只有
-真瀏覽器拿得到。所以唯一可用的是 **QR 登入** —— 用 beanfun 手機 App 掃碼,這條路不受 reCAPTCHA 影響。
+真瀏覽器拿得到。原有的 **QR 登入** 用 beanfun 手機 App 掃碼；另有選用的 GamaPass passkey 路徑，由真瀏覽器執行網站自己的 JS，不繞過 CAPTCHA 或站方限制。
 (裸 GET 也會被風控標記後逼出 reCAPTCHA,所以 `bfotp.py` 的每個 request 都帶齊
 `User-Agent` / `sec-ch-ua` / `Accept-Language`,而且 UA 與 `sec-ch-ua` 的 Chrome 主版號必須一致。)
+
+**選用 passkey（`tools/maple_passkey.py`）。** 日常順序是先驗證已存 session；無法使用才試專用 passkey；只有未嘗試登入的缺憑證/缺依賴才退一次原有 QR，真正嘗試後失敗立即結束；需要使用者解鎖/確認/真人驗證時停止並報告，不自動開始 QR。`login` 強制重登，`login --qr` 跳過 passkey。缺憑證、Chromium 或 `secret-tool` 不影響 QR；OTP stdout、帳號選擇與 session 格式不變。
+
+`passkey-setup` 必須在互動終端機由使用者在場操作：新視窗自行登入、確認、處理 CAPTCHA，再新增自己的一把專用 passkey，不沿用 Bitwarden。工具會對新分頁掛 CDP 虛擬 authenticator，取得新憑證後以 stdin 交給 `secret-tool store`，並讀回驗證；既有 keyring 值須使用者輸入 yes 才能取代。Secret Service 屬性固定為 `service=maple-login account=gamapass`；私鑰、cookie 與 token 不寫診斷或明文憑證檔。
+
+優先系統預設 Chromium 系瀏覽器，再選已知 Chromium。CDP 使用 `--remote-debugging-pipe`、fd3/fd4、NUL 分隔 JSON，沒有開 TCP 除錯埠，也不偽裝 UA。每次使用 `/run/user/...` tmpfs 的新臨時 profile；登入可選 Xvfb（無則有視窗），setup 永遠有視窗。CDP 讀寫及 buffered event 處理都檢查硬 deadline。只清理自己的 process group 與臨時 profile，不接管使用者原有瀏覽器：即使 leader 已退出，也等待非 zombie 後代收尾，必要時有界升級 SIGKILL；其他 child/fd 清理各有 finally 保護。
+
+`$XDG_CONFIG_HOME/maplestory-tw/passkey.lock` 序列化憑證讀取/登入/計數保存，`passkey-state.json` 保存非秘密的 dirty 安全狀態，不對使用者施加本機登入次數或冷卻限制。舊檔的 count/last 欄位忽略，不需手動刪檔；QR、passkey、setup 仍共用互斥鎖，並遵守站方限制。登入時只有一個 authenticator 持有該憑證並可 assertion；其他分頁不載入副本。切換 target 時先停用舊 presence、查核最新計數並移除舊副本，再以最新 signCount 啟用新 target。assertion 事件與最終 `getCredentials` 的最大 signCount 寫回 keyring，即使網站登入失敗也保存；若保存/確認計數失敗或程序被中止，dirty 狀態阻擋下次 passkey，必須重新 setup 一把新憑證或使用 QR，不能靜默重用舊計數。`forget` 維持原有 session 行為，不刪 passkey 或清除 dirty 防護。
+
+登入逾時可能涉及確認，或偵測可見 CAPTCHA 時，以 `UserActionRequired` 停止，工具不代解 CAPTCHA、不自動退 QR。keyring 使用 `gdbus`（Ubuntu `libglib2.0-bin`）先查非秘密的 SearchItems 鎖定狀態，保存前也確認預設 collection 未鎖；不主動 Unlock/Prompt。缺依賴/無憑證仍可退 QR，但無法確認 keyring 狀態、鎖住或保存失敗時請使用者操作。setup 保存失敗請不要把網站新增成功當作工具保存成功。
+
+**OTP 一次恢復。** 帳號清單成功但 `get_otp` 發生 BFError 或 requests 網路錯誤，不代表 session 必然失效（也可能是服務異常或另有登入 session）。若本次尚未取得新 session，僅以既有專用 passkey 取得一次新 session，安全保存並沿用保活，再申請一次 OTP。無 passkey、不足依賴、登入失敗、第二次 OTP 失敗均停止，不退 QR。若命令起始已取得新 session（含 QR），OTP 失敗就停止。恢復以第一次選定的穩定 sid 在新帳號清單找同一帳號、使用新的 ssn；找不到或停用就報錯，不再次詢問、不改選或更新偏好成別的帳號。每次命令最多一次新 session、最多兩次 OTP，重新執行命令才有新預算。選帳號、等待表單、交付/自動輸入、`--run` 與使用者中止的錯誤不觸發恢復；成功只交付一次，`get_otp` 本身不隱藏重試。 若在新 session 尚未返回呼叫端時中止（保存、保活、網站收尾或 signCount 同步），會關閉該 session 並原樣傳回 `KeyboardInterrupt`／`SystemExit`，不轉成 QR 或重登；signCount 同步中止保留 dirty 防護。
+
+顯式 `otp --qr` 若沿用舊 session 而 OTP 故障，該命令直接停止，不偷偷改用 passkey 或新增自動 QR 恢復；重新執行命令的正常登入選擇仍可用。
+
+本次一次恢復變更僅以 mock 故障注入與本機 fixture 回歸，沒有 live 登入；之前專用 passkey → 新 session → OTP 的受控成功記錄見 `tasks/todo.md`。取得 OTP 不要求關閉遊戲；測試 session/OTP 不等同操作遊戲。
 
 **流程分三段。** 完整的 15 步在 `tools/beanfun/bfotp.py` 檔頭,這裡只講形狀:
 
@@ -215,7 +231,7 @@ session 死了它會自己停掉並跳桌面通知。安裝條件綁在「有活
 若不負責裝,保活就再也回不來。
 上面那個「約 1~2 小時」是**閒置**觀察值;`bfWebToken` 有沒有另一個絕對壽命上限還沒測出來,
 `journalctl --user -u maple-keepalive` 的紀錄就是這個問題的答案。
-注意 session 仍在 tmpfs,**重開機還是要重掃 QR**,保活救不了那一半。
+注意 session 仍在 tmpfs，**重開機需要重登入**（已設專用 passkey 則先試它，否則 QR），保活救不了那一半。
 
 寫 session 檔走的是「臨時檔 + `os.rename()`」的原子換檔。保活跑在背景,會跟前景指令
 同時碰同一個檔;直接 `O_TRUNC` 就地寫的話中間有一段是半截的 JSON,讀到的人會判定

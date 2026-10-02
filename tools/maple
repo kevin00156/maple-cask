@@ -5,7 +5,7 @@
 #   maple login      只鑄 OTP 打進去(遊戲要已開、停在登入表單)
 #   maple stop       關遊戲(wineserver -k)
 #   maple status     遊戲 / wineserver 在不在
-#   maple qr         強制重掃 QR(= maple-login login)
+#   maple qr         強制重掃 QR(= maple-login login --qr)
 #   maple session    session 還活著嗎(= maple-login status)
 #   maple update     更新腳本 + runner 到最新 Release(--rollback 退 runner;不分組別,一次全部)
 #   其他一律原樣轉給 maple-login:maple otp / forget / keepalive / --name … 都照舊能用
@@ -117,7 +117,7 @@ case "${1:-}" in
     login)   shift; cmd_login "$@" ;;
     stop)    cmd_stop ;;
     status)  cmd_status ;;
-    qr)      shift; exec "$HERE/maple-login" login  "$@" ;;
+    qr)      shift; exec "$HERE/maple-login" login --qr "$@" ;;
     session) shift; exec "$HERE/maple-login" status "$@" ;;
     -h|--help|help) awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "$0" ;;
     *)       exec "$HERE/maple-login" "$@" ;;                 # otp / forget / keepalive / --name … 不再自己維護第二張表

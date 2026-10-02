@@ -24,7 +24,15 @@ maple-cask(楓木桶)—— 讓台版新楓之谷在 Linux 上跑起來。名字
   sudo locale-gen zh_TW.UTF-8
   ```
 - 一份現成的 MapleStory 目錄(含 `MapleStory.exe`、`Patcher.exe`)—— 本專案不處理遊戲下載 / 安裝
-- 一支 beanfun 手機 App(第一次要掃 QR 登入)
+- 一支 beanfun 手機 App（QR 登入與 passkey 註冊時的備用驗證）
+- 選用 passkey 自動重登：Chromium 系瀏覽器、`secret-tool` 與 `gdbus`（Ubuntu：`sudo apt install libsecret-tools libglib2.0-bin`）與已解鎖的 Secret Service/KWallet。`Xvfb` 選用（`sudo apt install xvfb`）；沒有就開可見視窗。不需要 `websocket-client`，缺少 passkey 依賴仍可 QR。
+  ```bash
+  tools/maple-login passkey-setup # 使用者在新視窗登入並新增專用 passkey，不沿用 Bitwarden
+  tools/maple-login login        # passkey 優先，不可用才退 QR
+  tools/maple-login login --qr   # 強制 QR
+  ```
+  `maple qr` 明確使用 QR，不會改走 passkey。使用者重新執行命令不受本機次數／10 分鐘冷卻限制；舊 `passkey-state.json` 的 count/last 自動忽略，無需刪檔。憑證互斥鎖、dirty 安全防護與站方限制仍保留。
+  日常仍優先重用 session。缺少專用 passkey 或依賴（尚未嘗試登入）才退一次 QR；真正嘗試 passkey 後的失敗立即停止，不自動 QR 或再次登入。舊 session 的 OTP 請求故障可用 passkey 恢復一次，沿用原選帳號 sid，最多再申請一次 OTP；本次已取得新 session 就不再恢復。顯式 `otp --qr` 沿用舊 session 時若 OTP 故障，直接停止，不改用 passkey 或自動重新 QR。詳見 [登入機制 §11](docs/how-it-works.md#11-取得-otptoolsmaple-login)。本次整合已做本機與模擬測試，真實註冊/重登尚待使用者在場驗證。
 - 選用:一份 Windows 的 `C:\Windows\Fonts`(至少 `mingliu.ttc`),沒有的話字會糊
 
 ## 安裝

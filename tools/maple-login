@@ -3,7 +3,9 @@
 
     tools/maple-login            # 有 session 就鑄 OTP;沒有或失效就帶你掃 QR,然後鑄
     tools/maple-login --run      # 印完立刻開遊戲(2 分鐘的表單窗口從那一刻起算)
-    tools/maple-login login      # 強制重掃 QR(不管舊 session 還活著沒)
+    tools/maple-login login      # 強制重登(passkey 優先,不可用才退 QR)
+    tools/maple-login login --qr # 強制 QR
+    tools/maple-login passkey-setup # 使用者在場註冊專用 passkey
     tools/maple-login status     # session 還活著嗎(實際打一次 API);活 0、死 1
     tools/maple-login forget     # 刪掉 session 檔,並停掉保活
     tools/maple-login keepalive  # 戳一下 session(給 systemd timer 用,不必手動跑)
@@ -51,6 +53,7 @@ sys.path.insert(0, os.path.join(HERE, "beanfun"))
 
 import bfotp  # noqa: E402
 import requests  # noqa: E402
+import maple_passkey  # noqa: E402
 
 SERVICE = (bfotp.DEFAULT_SERVICE_CODE, bfotp.DEFAULT_SERVICE_REGION)
 
@@ -452,6 +455,12 @@ def show_qr(png: bytes, deeplink: str) -> str:
 
 
 def qr_login(timeout: int) -> Login:
+    # QR 與 passkey 共用憑證互斥鎖；不套用本機冷卻或 passkey dirty 拒絕。
+    with maple_passkey.CredentialLock(config_dir()):
+        return _qr_login(timeout)
+
+
+def _qr_login(timeout: int) -> Login:
     """整條 QR 登入 + 把憑證落地。選哪個帳號是呼叫端的事。"""
     s = bfotp.new_session()
     png_path = None
@@ -929,26 +938,49 @@ def cmd_otp(args) -> int:
         if problem:
             return die(problem, 2)
 
+    acquired_session = False  # 命令內最多一次新 session；重新執行才有新預算。
     try:
         login = open_session()
-    except Exception as exc:
-        print(f"session 不能用:{exc}", file=sys.stderr)
-        print("→ 帶你重新登入,等一下會跳出 QR 圖,用 beanfun App 掃它", file=sys.stderr)
-        login = qr_login(args.qr_timeout)
+    except Exception:
+        print("無法使用已存 session；嘗試取得一次新 session。", file=sys.stderr)
+        acquired_session = True
+        login = fresh_login(args)
 
-    keepalive_ensure()
-    remembered = load_remembered()
     try:
+        keepalive_ensure()
+        remembered = load_remembered()
         acct = pick_account(login.accounts, args.name, remembered, args.pick)
+        if not acct["enabled"]:
+            raise bfotp.BFError("所選帳號已停用")
         if acct["sname"] != (remembered or {}).get("sname"):
             save_remembered(acct)  # 記住這次選的,下次不用再打 --name
         # 先選帳號再等視窗:不然人要乾等幾十秒才被問要用哪個帳號
         if args.wait_game:
             if not wait_for_login_screen(args.wait_game):
                 print("  沒等到登入表單,還是照鑄(自己看畫面,打不進去就從剪貼簿貼)")
-        otp = bfotp.get_otp(login.session, login.web_token, acct, *SERVICE)
+        try:
+            otp = bfotp.get_otp(login.session, login.web_token, acct, *SERVICE)
+        except (bfotp.BFError, requests.RequestException):
+            if acquired_session:
+                raise bfotp.BFError("OTP 申請未完成；本次已取得新 session，不再登入或申請 OTP。") from None
+            if args.qr:
+                raise bfotp.BFError("OTP 申請未完成；已明確選擇 QR，本次停止，不改用 passkey 或自動重新 QR。") from None
+            print("OTP 申請未完成（可能為服務或 session 問題）；僅嘗試一次 passkey 恢復。", file=sys.stderr)
+            acquired_session = True
+            selected_sid = acct["sid"]
+            login.close()
+            login = None
+            login = fresh_login(args, passkey_only=True)
+            acct = next((a for a in login.accounts if a["sid"] == selected_sid), None)
+            if acct is None or not acct["enabled"]:
+                raise bfotp.BFError("新 session 中原選帳號不存在或已停用；不改選其他帳號。")
+            try:
+                otp = bfotp.get_otp(login.session, login.web_token, acct, *SERVICE)
+            except (bfotp.BFError, requests.RequestException):
+                raise bfotp.BFError("恢復後 OTP 申請仍未完成；本次不再登入或申請 OTP。") from None
     finally:
-        login.close()
+        if login is not None:
+            login.close()
 
     show(login.accounts, acct, otp)
 
@@ -970,8 +1002,53 @@ def cmd_otp(args) -> int:
     return 0
 
 
+def fresh_login(args, *, passkey_only=False) -> Login:
+    if passkey_only or not args.qr:
+        try:
+            s, token, accounts = maple_passkey.login(bfotp, config_dir(), runtime_dir())
+        except maple_passkey.PasskeyUnavailable as exc:
+            if passkey_only:
+                raise maple_passkey.PasskeyUnavailable(
+                    'OTP 恢復需要可用的專用 passkey；本次停止，不改用 QR。') from None
+            print(f'passkey：{exc}；尚未嘗試登入，改用一次 QR。', file=sys.stderr)
+        except maple_passkey.PasskeyError:
+            raise  # 真正登入失敗/使用者操作邊界：不重試、不自動 QR。
+        except Exception:
+            raise maple_passkey.PasskeyError(
+                'passkey 未完成；本次停止，不重試或改用 QR（不輸出底層錯誤）。') from None
+        else:
+            login = Login(s, token, accounts)
+            try:
+                save_session(login)
+                keepalive_ensure()
+            except (KeyboardInterrupt, SystemExit):
+                login.close()
+                raise  # 中止只清理，原樣拋回；不轉換成失敗/QR/重登。
+            except Exception:
+                login.close()
+                raise maple_passkey.PasskeyError('新 session 保存或保活未完成；本次停止。') from None
+            return login
+    # QR 取得 session 失敗也立即停止；不印出網站/requests 的底層內容。
+    try:
+        return qr_login(args.qr_timeout)
+    except (bfotp.BFError, requests.RequestException):
+        raise bfotp.BFError('QR 取得 session 未完成；本次停止，不重試。') from None
+
+
+def cmd_passkey_setup(args) -> int:
+    if not sys.stdin.isatty():
+        return die('passkey-setup 需要使用者在場的互動終端機。', 2)
+    try:
+        maple_passkey.setup(bfotp, config_dir(), runtime_dir())
+    except maple_passkey.PasskeyError as exc:
+        return die(f'passkey-setup：{exc}。未刪除原 session/憑證。')
+    except Exception:
+        return die('passkey 註冊/保存未完成；請確認依賴、解鎖 keyring 與網站確認。未刪除原 session/憑證。')
+    return 0
+
+
 def cmd_login(args) -> int:
-    login = qr_login(args.qr_timeout)
+    login = fresh_login(args)
     try:
         acct = pick_account(login.accounts, args.name, load_remembered(), args.pick)
         save_remembered(acct)
@@ -1039,7 +1116,8 @@ def cmd_keepalive(args) -> int:
 
 
 COMMANDS = {"otp": cmd_otp, "login": cmd_login, "status": cmd_status,
-            "forget": cmd_forget, "keepalive": cmd_keepalive}
+            "forget": cmd_forget, "keepalive": cmd_keepalive,
+            "passkey-setup": cmd_passkey_setup}
 
 
 def main() -> int:
@@ -1052,7 +1130,7 @@ def main() -> int:
     )
     ap.add_argument(
         "cmd", nargs="?", default="otp", choices=sorted(COMMANDS),
-        help="otp(預設,可省略)/ login 強制重掃 QR / status 檢查 session / "
+        help="otp(預設,可省略)/ login 強制重登 / passkey-setup 註冊 / status 檢查 session / "
              "forget 刪 session / keepalive 戳一下 session(給 systemd timer 用)",
     )
     ap.add_argument("--name", metavar="名稱",
@@ -1072,6 +1150,7 @@ def main() -> int:
                     help="自動輸入送哪種訊息,預設 char;打不進去時才換(見 mapletype.c 檔頭)")
     ap.add_argument("--gap", type=int, default=0, metavar="ms",
                     help="自動輸入時每個字元之間等幾毫秒,預設 0(一次灌完);掉字才調高,40 是實測過的人類節奏")
+    ap.add_argument("--qr", action="store_true", help="重登入時跳過 passkey、強制 QR（login --qr）")
     ap.add_argument("--qr-timeout", type=int, default=180, metavar="秒",
                     help="等待掃碼秒數,預設 180")
     ap.add_argument("-v", "--verbose", action="store_true", help="把每一步印到 stderr")
@@ -1080,10 +1159,12 @@ def main() -> int:
     bfotp.VERBOSE = args.verbose
     try:
         return COMMANDS[args.cmd](args)
+    except maple_passkey.PasskeyError as exc:
+        return die(str(exc))
     except bfotp.BFError as exc:
         return die(f"錯誤:{exc}")
-    except requests.RequestException as exc:
-        return die(f"網路錯誤:{exc}")
+    except requests.RequestException:
+        return die("網路請求未完成（不輸出可能含憑證的底層錯誤）。")
     except KeyboardInterrupt:
         return die("\n中斷。", 130)
 
