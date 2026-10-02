@@ -13,6 +13,7 @@ ROOT=$(readlink -f "$WINE_ROOT")
 # 一次 find 掃完(-lname 比對 exe 符號連結的目標),不要每個 pid fork 一次 readlink —— 上千個行程會慢到幾十秒
 stragglers() {
     local e p
+    # shellcheck disable=SC2044  # /proc/<pid>/exe 路徑不會有空白
     for e in $(find /proc -mindepth 2 -maxdepth 2 -name exe -lname "$ROOT/*" 2>/dev/null); do
         p=${e#/proc/}; p=${p%/exe}
         tr '\0' '\n' <"/proc/$p/environ" 2>/dev/null | grep -qxF "WINEPREFIX=$WINEPREFIX" && echo "$p"
@@ -36,6 +37,6 @@ for _ in $(seq $tries); do
     [ -z "$(stragglers)" ] && exit 0
     sleep 0.25
 done
-left=$(stragglers)
-[ -n "$left" ] && { echo "kill-prefix:SIGKILL 殘留的 wine 行程 $(echo $left)" >&2; kill -9 $left 2>/dev/null; }
+mapfile -t left < <(stragglers)
+[ ${#left[@]} -gt 0 ] && { echo "kill-prefix:SIGKILL 殘留的 wine 行程 ${left[*]}" >&2; kill -9 "${left[@]}" 2>/dev/null; }
 exit 0

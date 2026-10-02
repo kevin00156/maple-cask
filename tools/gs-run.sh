@@ -8,6 +8,7 @@
 #   要用自建的 gamescope(中文輸入法候選窗,patches/gamescope-0001),把它的 bin/ 放進 PATH 最前面即可(env.sh 裡設)。
 set -euo pipefail
 if [ -z "${WINE_ROOT:-}" ]; then
+    # shellcheck source=/dev/null  # 使用者自己的設定檔,不在 repo 裡
     source "${MAPLE_ENV:-${XDG_CONFIG_HOME:-$HOME/.config}/maplestory-tw/env.sh}"
 fi
 : "${WINE_ROOT:?請設定 WINE_ROOT(見 env.example)}" "${WINEPREFIX:?請設定 WINEPREFIX}"
@@ -20,4 +21,5 @@ for p in $(pgrep -x wineserver); do
 done
 export MAPLE_LOG=${MAPLE_LOG:-$HOME/.cache/maplestory-tw/gs-$(date +%m%d-%H%M%S).log}
 echo "log → $MAPLE_LOG"
+# shellcheck disable=SC2086  # GS_ARGS 是多個參數,要靠字詞分割拆開
 exec gamescope ${GS_ARGS:--W 1366 -H 768} -- "$(dirname "$(readlink -f "$0")")/../run.sh"
