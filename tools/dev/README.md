@@ -12,6 +12,7 @@
 | `focusthief.c` + `focustest.sh` | 一支只會對自己 `SetForegroundWindow` 的視窗;量桌面焦點會不會被搶回去 | `patches/0008` |
 | `imeprobe.c` + `imetest.py` | 形狀跟遊戲一樣的裸視窗;用 XTEST 自動打注音,看 Win32 收到什麼訊息 | `patches/0010`、`0011` |
 | `keyrepeat-probe.c` | 按住一個鍵時,訊息佇列的 repeat 與 `GetAsyncKeyState` 各看到什麼 | `patches/0012` |
+| `modeprobe.c` + `modetest.sh` | D3D9 全螢幕切 1024x768 等解析度時,gamescope 輸出是補黑邊還是拉伸、滑鼠座標對不對(headless,不干擾遊戲) | `docs/known-issues.md`「拍賣場被拉伸」 |
 | `netprobe.c` / `netprobe.sh` | 對登入伺服器只做 TCP connect / 列出這個 wine 實例實際持有的 TCP 連線 | 登入伺服器連線中斷(`NETFAIL`) |
 
 `NETFAIL` = 遊戲彈出「與登入伺服器連線中斷,請稍後再試。」。

@@ -4,7 +4,8 @@
 #   - 遊戲活在 gamescope 自己的 Xwayland 裡,永遠是唯一有焦點的視窗:不會搶你桌面的焦點,
 #     你切去別的視窗時它也不會收到 deactivate。
 # 前提:遊戲已關、wineserver 已死(wine 的 explorer desktop 得在 gamescope 的 Xwayland 上重生)。
-#   W/H = gamescope 內部解析度,預設跟遊戲一樣 1366x768;全螢幕:GS_ARGS="-W 1366 -H 768 -f" tools/gs-run.sh
+#   W/H = gamescope 內部解析度 = 遊戲選單能選的最大解析度,預設 1920x1080;全螢幕:GS_ARGS="-W 1920 -H 1080 -f" tools/gs-run.sh
+#   比它方正的模式(拍賣場 1024x768)由 wine 補黑邊,見 prefix/reg/maplestory.reg 的 EmulateModeset。
 #   要用自建的 gamescope(中文輸入法候選窗,patches/gamescope-0001),把它的 bin/ 放進 PATH 最前面即可(env.sh 裡設)。
 set -euo pipefail
 if [ -z "${WINE_ROOT:-}" ]; then
@@ -20,4 +21,4 @@ for p in $(pgrep -x wineserver); do
 done
 export MAPLE_LOG=${MAPLE_LOG:-$HOME/.cache/maplestory-tw/gs-$(date +%m%d-%H%M%S).log}
 echo "log → $MAPLE_LOG"
-exec gamescope ${GS_ARGS:--W 1366 -H 768} -- "$(dirname "$(readlink -f "$0")")/../run.sh"
+exec gamescope ${GS_ARGS:--W 1920 -H 1080} -- "$(dirname "$(readlink -f "$0")")/../run.sh"

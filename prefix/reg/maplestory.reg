@@ -9,6 +9,10 @@ Windows Registry Editor Version 5.00
 "Grab"="N"
 "GrabFullscreen"="N"
 "UseLinuxInputEvents"="Y"
+; 換解析度不真的切螢幕模式,由 wine 把畫面等比縮放、置中、補黑邊(win32u sysparams.c 的 virtual modes)。
+; 拍賣場會用 D3D9 獨占全螢幕切到 1024x768;沒這個鍵時那個模式切換落到 gamescope 的 Xwayland,
+; swapchain 仍是整個輸出的大小 → 4:3 畫面被拉成 16:9。量測:tools/dev/modetest.sh,紀錄:docs/known-issues.md。
+"EmulateModeset"="Y"
 
 [HKEY_CURRENT_USER\Software\Wine\DirectInput]
 "UseLinuxInputEvents"="Y"
