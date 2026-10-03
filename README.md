@@ -60,7 +60,8 @@ maple help                # 全部指令
 ```
 - 請一律用 `maple`(經 gamescope)開遊戲,不要直接跑 wine —— 不經 gamescope 常常連不上登入伺服器。
 - 多開:`maple -2 setup` 一次,之後 `maple -2`(`-2`~`-9`)。
-- 全螢幕 / 改解析度:`GS_ARGS="-W 1920 -H 1080 -f" maple game`(`-W/-H` 是遊戲選單能選的最大解析度,預設 1920x1080)。
+- 全螢幕 / 改解析度:`GS_ARGS="-W 1366 -H 768 -f" maple game`。要 1920x1080 得先把遊戲設成**視窗模式**,再 `GS_ARGS="-W 1920 -H 1080"`;
+  遊戲是全螢幕時改 `-W/-H` 會在登入前斷線(原因見 `docs/known-issues.md`「拍賣場被拉伸」)。
 - 用 Lutris / Heroic:執行檔設成 `tools/gs-run.sh`(不是 wine 本身),環境變數照 `env.sh` 填。
 
 ## 更新

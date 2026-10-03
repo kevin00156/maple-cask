@@ -12,6 +12,7 @@ Windows Registry Editor Version 5.00
 ; 換解析度不真的切螢幕模式,由 wine 把畫面等比縮放、置中、補黑邊(win32u sysparams.c 的 virtual modes)。
 ; 拍賣場會用 D3D9 獨占全螢幕切到 1024x768;沒這個鍵時那個模式切換落到 gamescope 的 Xwayland,
 ; swapchain 仍是整個輸出的大小 → 4:3 畫面被拉成 16:9。量測:tools/dev/modetest.sh,紀錄:docs/known-issues.md。
+; 登入畫面(固定 1366x768)與 gamescope 內部解析度相同時不經過這條路,開著不影響登入(實測 3/3)。
 "EmulateModeset"="Y"
 
 [HKEY_CURRENT_USER\Software\Wine\DirectInput]
