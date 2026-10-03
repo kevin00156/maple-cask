@@ -28,6 +28,7 @@ if [ "${1:-}" = update ]; then shift; exec "$HERE/maple-update" "$@"; fi
 setup_instance() {
     local n=$1 envf=$CFG/env-$1.sh data
     [ -e "$envf" ] && { echo "第 $n 組已經有了($envf);要重建先刪它" >&2; return 1; }
+    # shellcheck source=/dev/null  # 使用者自己的設定檔,不在 repo 裡
     source "$CFG/env.sh"
     data=${MAPLE_DATA:-${XDG_DATA_HOME:-$HOME/.local/share}/maplestory-tw}/instances/$n
     [ -f "$GAME_DIR/MapleStory.exe" ] || { echo "主設定的 GAME_DIR 裡沒有 MapleStory.exe:$GAME_DIR" >&2; return 1; }
@@ -47,6 +48,7 @@ setup_instance() {
         echo "export GAME_DIR=\"$data/game\""
     } > "$envf"
     echo "== 設定檔 → $envf"
+    # shellcheck source=/dev/null  # 上面剛產生的設定檔
     (source "$envf" && "$HERE/../prefix/setup-prefix.sh")
     echo "完成。開:maple -$n"
 }
@@ -62,6 +64,7 @@ if [[ ${1:-} =~ ^-([2-9])$ ]]; then
 fi
 
 if [ -z "${WINE_ROOT:-}" ]; then
+    # shellcheck source=/dev/null  # 使用者自己的設定檔,不在 repo 裡
     source "${MAPLE_ENV:-$CFG/env.sh}"
 fi
 : "${WINE_ROOT:?}" "${WINEPREFIX:?}" "${GAME_DIR:?}"
@@ -83,7 +86,8 @@ cmd_game() {
         echo "wineserver 還活著但沒遊戲 → 先殺,不然 explorer 的 desktop 留在錯的 display"
         "$HERE/kill-prefix.sh"
     fi
-    local log=$HOME/.cache/maplestory-tw/gs${MAPLE_INSTANCE:+-$MAPLE_INSTANCE}-$(date +%m%d-%H%M%S).log
+    local log
+    log=$HOME/.cache/maplestory-tw/gs${MAPLE_INSTANCE:+-$MAPLE_INSTANCE}-$(date +%m%d-%H%M%S).log
     mkdir -p "$(dirname "$log")"
     MAPLE_LOG=$log setsid -f "$HERE/gs-run.sh" >>"$log" 2>&1     # setsid:Ctrl-C 這個終端機不會連遊戲一起殺
     echo "遊戲啟動中(gamescope)。log → $log"

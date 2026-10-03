@@ -77,6 +77,7 @@ if [ -n "${FONTS_DIR:-}" ]; then
     cp -f "$FONTS_DIR"/* "$FD"/ 2>/dev/null || true
     # SimSun 沒有 Big5 位元又會蓋掉登錄檔的代換,一定要拿掉(理由見 reg/fonts.reg)
     rm -f "$FD"/simsun.ttc "$FD"/simsunb.ttf "$FD"/SimsunExtG.ttf
+    # shellcheck disable=SC2012  # 只是數檔案個數給人看,字型檔名不會有換行
     echo "   $(ls "$FD" | wc -l) 個字型檔;驗證(全部應為 intLead=0,條內 RGB 值 2~3):"
     # gamefont.exe 不進 git(二進位),沒有就當場編;建置指令在 gamefont.c 檔頭
     GAMEFONT=$REPO/tools/gamefont.exe

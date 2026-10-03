@@ -100,6 +100,7 @@ gamepids() {
 tcp_conns() {
     local p ino inodes
     for p in $(gamepids | sort -u); do
+        # shellcheck disable=SC2010  # /proc/<pid>/fd 的檔名都是數字;要的是 ls -l 印出的連結目標
         inodes=$(ls -l "/proc/$p/fd" 2>/dev/null | grep -o 'socket:\[[0-9]*\]' | grep -o '[0-9]*')
         for ino in $inodes; do
             awk -v ino="$ino" -v pid="$p" 'NR>1 && $10==ino {
@@ -201,8 +202,8 @@ $(sed 's/.*) //' "$t/stat" 2>/dev/null | cut -d' ' -f8,10,12,13)" | tr -s ' \n' 
 #   先動後停,看 lastsnd/lastrcv        → handshake 中途停在哪一步
 # ss -p 要 root 才看得到行程,所以先用 tcp_conns 拿到本輪的 src/dst,再用它們去問 ss。
 tcp_stats() {
-    local pid lo arrow re st
-    tcp_conns | while read -r pid lo arrow re st; do
+    local pid lo re st
+    tcp_conns | while read -r pid lo _ re st; do
         [ -n "$lo" ] || continue
         printf '%s %s -> %s  %s\n' "$pid" "$lo" "$re" \
             "$(ss -tin "src $lo dst $re" 2>/dev/null | tail -n +2 | tr -s ' \n' ' ' |

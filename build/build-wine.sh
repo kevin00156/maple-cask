@@ -91,6 +91,7 @@ if [ ! -d "$GE_DIR/files/lib/wine/dxvk" ]; then
     fi
     curl -fsL --retry 3 "$base/$GE_VERSION-x86_64.sha512sum" | (cd "$BUILD_DIR/ge" && sha512sum -c -)
     tar -C "$BUILD_DIR/ge" -xzf "$BUILD_DIR/ge/$name"
+    # shellcheck disable=SC2012  # 目錄名是 GE-Proton<版本>,沒有特殊字元
     GE_DIR=$(ls -d "$BUILD_DIR/ge"/GE-Proton*/ | head -1)
 fi
 cp -a "$GE_DIR/files/lib/wine/dxvk" "$GE_DIR/files/lib/wine/vkd3d-proton" "$OUT/lib/wine/"
