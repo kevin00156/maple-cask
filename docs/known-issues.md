@@ -193,7 +193,7 @@ KDE 的輸出縮放全是 1,不是 KWin 放大。
   (`-W/-H`,或 `-w/-h`),預設 `-W 1920 -H 1080`;視窗被 KWin 或手動改了大小就又縮放。
 - ⚠ **不要用 `-S integer`**:拍賣場等固定低解析度畫面不再被放大,貼在左上角留大片黑邊。
 
-## 拍賣場被拉伸成 16:9 → `EmulateModeset`;1920 只能用視窗模式(2026-10-03)
+## 拍賣場被拉伸成 16:9 → `EmulateModeset`;1920 只能用視窗模式 + gamescope-0002(2026-10-03)
 症狀:進拍賣場(固定 1024×768)畫面被橫向拉滿,而不是左右補黑邊;內部解析度壓在 1366×768,遊戲選不到 1920×1080。
 
 **拉伸的根因**:拍賣場用 D3D9 獨占全螢幕切模式(DXVK log `Setting display mode: 1024x768`)。winex11 把它
@@ -237,8 +237,19 @@ Xwayland 的假模式),主執行緒切完就停在 poll 不再前進,另一條�
 - 1920×1080 的 Xwayland 沒有 1366×768(只有 1368×768;`cvt 1366` 也會取整成 1368)。
 - 三組多開並行測試會互相干擾(最後啟動的那組 1/6,舊設定也斷),量這種 race 要單開循序跑。
 
-**要 1920×1080**:遊戲先改成視窗模式,之後用 `GS_ARGS="-W 1920 -H 1080"` 開,遊戲裡再把解析度選 1920×1080。
-視窗模式下進拍賣場的樣子未實測(2026-09-27 記過一次「主視窗維持 1920×1080、只畫左上角 1024×768」,當時沒開 EmulateModeset)。
+**要 1920×1080**:遊戲改成視窗模式、遊戲裡選 1920×1080。`tools/gs-run.sh` 沒給 `GS_ARGS` 時讀 `soScreenMode`:
+視窗模式就用 `soResolutionWidth/Height` 當內部解析度,全螢幕一律 1366×768,不會再組出「全螢幕 + 1920」。
+
+### 視窗模式進拍賣場只畫在左上角 → patches/gamescope-0002
+進拍賣場時遊戲把 1920×1080 的 `WS_POPUP`(style `94080000`)換成可調整大小的 1032×802 視窗(style `14ce0000`,
+client 1024×768)。wine 先送 `_NET_WM_STATE` 拿掉 fullscreen,**等 WM 把屬性寫回才送縮小的 configure**
+(`+x11drv`:`window_set_config ... is updating _NET_WM_STATE, delaying request`)。gamescope 只改自己的旗標、
+從不寫回 `_NET_WM_STATE`,wine 就永遠等著:X 視窗留在 1920×1080,1024×768 的畫面貼在左上角。
+`GAMESCOPE_WSI_FORCE_BYPASS=1` 無效(不是 bypass 的問題)。
+
+`gamescope-0002` 照 EWMH 把狀態寫回屬性。實測:探針(同樣的 style 切換 + D3D9)X 視窗變 1024×768、gamescope 放成
+1440×1080 置中;全螢幕切模式探針結果不變;真遊戲登入 視窗 1920 3/3、全螢幕 1366 3/3。
+查遊戲視窗狀態用的是唯讀的 `GetWindowLong/GetWindowRect`(不送輸入),探針與查詢工具在 session scratch,沒進 repo。
 
 ## 鍵盤重複:修飾鍵在 X 下永遠不連發 → patch 0012 修(2026-09-27)
 症狀:綁在 Shift / Ctrl / Alt 的技能按住只放一次;改綁一般鍵(J)就會連發。Windows / VM 沒這問題。
