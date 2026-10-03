@@ -1,0 +1,73 @@
+From: kevin <contact@qazsskevin.org>
+Subject: [PATCH] xwm: send a synthetic ConfigureNotify for no-op ConfigureRequests
+
+ICCCM 4.1.5: when the window manager handles a ConfigureRequest without
+moving or resizing the window, the X server generates no ConfigureNotify,
+so the WM has to send a synthetic one.  gamescope only forwarded the
+request with XConfigureWindow.
+
+Wine waits for the ConfigureNotify that answers its own configure request
+(by serial) and holds every later _NET_WM_STATE, _MOTIF_WM_HINTS and
+configure request until it arrives ("is updating config, delaying
+request").  MapleStory in windowed 1920x1080 starts with a 1366x768 login
+popup and grows it to 1920x1080; gamescope has already stretched the
+window to the root by then, so Wine's request for (0,0)-(1920,1080) is a
+no-op and never gets an answer.  When the game later switches to a
+resizable 1032x802 window for the auction house, nothing reaches the X
+server: the 1024x768 client stays in the top-left corner of a 1920x1080
+X window.
+
+Compare the request with the current geometry and, when it changes
+nothing, send the synthetic event after forwarding the request.
+
+Tested (headless gamescope 1920x1080, probe doing the game's sequence:
+1366x768 popup -> 1920x1080 popup -> style 0x14ce0000 at 1032x802 ->
+back to the 1920x1080 popup, D3D9 windowed): before, the X window stays
+1920x1080 and the picture sits in the top-left corner; after, the X
+window is 1024x768 and gamescope scales it to 1440x1080 centred, then
+back to 1920x1080.  Needs gamescope-0002 (Wine waits for _NET_WM_STATE
+first).
+
+--- a/src/steamcompmgr.cpp
++++ b/src/steamcompmgr.cpp
+@@ -6257,7 +6257,40 @@
+ 		wlserver_unlock();
+ 	}
+ 
++	// ICCCM 4.1.5: a request that does not move or resize the window produces no real
++	// ConfigureNotify, so the window manager has to send a synthetic one.  Wine holds every
++	// later state, hints and configure request until it sees the event for its own request,
++	// so without it a window that once asked for its current geometry never changes again
++	// (MapleStory's auction house stays a 1024x768 client in a 1920x1080 X window).
++	XWindowAttributes attr;
++	bool bSynthetic = XGetWindowAttributes( ctx->dpy, configureRequest->window, &attr ) &&
++		( !( configureRequest->value_mask & CWX ) || changes.x == attr.x ) &&
++		( !( configureRequest->value_mask & CWY ) || changes.y == attr.y ) &&
++		( !( configureRequest->value_mask & CWWidth ) || changes.width == attr.width ) &&
++		( !( configureRequest->value_mask & CWHeight ) || changes.height == attr.height ) &&
++		( !( configureRequest->value_mask & CWBorderWidth ) || changes.border_width == attr.border_width );
++
+ 	XConfigureWindow( ctx->dpy, configureRequest->window, configureRequest->value_mask, &changes );
++
++	if ( bSynthetic )
++	{
++		XConfigureEvent notify =
++		{
++			.type = ConfigureNotify,
++			.send_event = True,
++			.display = ctx->dpy,
++			.event = configureRequest->window,
++			.window = configureRequest->window,
++			.x = attr.x,
++			.y = attr.y,
++			.width = attr.width,
++			.height = attr.height,
++			.border_width = attr.border_width,
++			.above = None,
++			.override_redirect = attr.override_redirect,
++		};
++		XSendEvent( ctx->dpy, configureRequest->window, False, StructureNotifyMask, (XEvent *)&notify );
++	}
+ }
+ 
+ static void circulate_request( xwayland_ctx_t *ctx, XCirculateRequestEvent *circulateRequest )

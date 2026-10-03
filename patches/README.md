@@ -18,5 +18,6 @@
 | 0012 | `winex11` 由 wineserver 做 Windows 式 auto-repeat | 綁在 Shift / Ctrl / Alt 的技能按住會連發(X server 寫死修飾鍵不 repeat) | 可考慮送上游 |
 | gamescope-0001 | gamescope 畫輸入法的 override-redirect 視窗(當 decoration 畫,不拿鍵盤焦點) | 中文輸入法候選窗(選用,`build/build-gamescope.sh`) | gamescope,可考慮送 |
 | gamescope-0002 | gamescope 收到 `_NET_WM_STATE` client message 後把屬性寫回(EWMH) | 視窗模式進拍賣場:wine 等這個寫回才縮小視窗,沒有就只畫在左上角 | **通用 bug,待送** |
+| gamescope-0003 | 不改幾何的 ConfigureRequest 回一個合成 ConfigureNotify(ICCCM 4.1.5) | 同上:登入 1366→1920 那次 wine 的請求沒回應,之後所有視窗變更都被 wine 延後(需 0002) | **通用 bug,待送** |
 
 量測用的探針在 [`tools/dev/`](../tools/dev/README.md)。
