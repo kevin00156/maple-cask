@@ -34,4 +34,10 @@ export XMODIFIERS="${XMODIFIERS:-@im=fcitx}"
 # wait pipe 上永遠不死,reaper 沒有逾時地等它們 → gamescope 視窗「沒有回應」。所以 TERM 由這裡把整個 prefix 收乾淨。
 trap '"$REPO/tools/kill-prefix.sh"; exit 143' TERM INT HUP
 "$WINE_ROOT/bin/wine" "$GAME_DIR/MapleStory.exe" &
+rc=0; wait $! || rc=$?   # set -e 下非 0 會直接退出,下面的等待就被跳過了
+# 遊戲版本舊了,MapleStory.exe 會叫起 Patcher.exe 然後自己先退。run.sh 這時退出 = reaper 的主行程死了,
+# 它就對整棵樹送 SIGTERM,Patcher 剛寫完 log 開頭就被殺,遊戲永遠更新不了(2026-10-07)。
+# 所以等這個 prefix 的 wine 全部走光再退;放背景再 wait,上面的 trap 才收得到訊號。
+"$WINE_ROOT/bin/wineserver" -w &
 wait $!
+exit $rc
