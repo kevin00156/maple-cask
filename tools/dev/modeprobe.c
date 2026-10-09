@@ -8,6 +8,9 @@
  * 編譯: x86_64-w64-mingw32-gcc -O2 -o modeprobe.exe modeprobe.c -ld3d9
  * 用法: wine modeprobe.exe 1024x768:6 1920x1080:6   (每個解析度停 6 秒;stdout 印出切換時間點)
  * 每秒另印一行 cursor(GetCursorPos)與最後一個 WM_MOUSEMOVE 的座標,用來驗補黑邊時滑鼠有沒有對準。
+ * 解析度前加 w / r 改走遊戲「視窗模式」的路徑(D3D9 Windowed=TRUE,不切模式):
+ *   w1366x768:6 = 那個大小的 WS_POPUP(遊戲本體,style 94080000);
+ *   r1024x768:6 = client 是那個大小、可調整大小的視窗(拍賣場,style 14ce0000)。
  */
 #include <windows.h>
 #include <d3d9.h>
@@ -63,9 +66,20 @@ int main( int argc, char **argv )
         DWORD end, next_report = 0;
         HRESULT hr;
         MSG msg;
+        const char *arg = argv[i];
+        char kind = (*arg == 'w' || *arg == 'r') ? *arg++ : 0;
 
-        if (sscanf( argv[i], "%dx%d:%d", &w, &h, &secs ) != 3) { printf( "看不懂 %s\n", argv[i] ); return 1; }
-        pp.Windowed = FALSE;
+        if (sscanf( arg, "%dx%d:%d", &w, &h, &secs ) != 3) { printf( "看不懂 %s\n", argv[i] ); return 1; }
+        if (kind)
+        {
+            DWORD style = kind == 'w' ? 0x94080000 : 0x14ce0000;
+            RECT rc = { 0, 0, w, h };
+            AdjustWindowRect( &rc, style, FALSE );
+            SetWindowLongA( hwnd, GWL_STYLE, style );
+            SetWindowPos( hwnd, HWND_TOP, 0, 0, rc.right - rc.left, rc.bottom - rc.top,
+                          SWP_FRAMECHANGED | SWP_SHOWWINDOW );
+        }
+        pp.Windowed = kind != 0;
         pp.SwapEffect = D3DSWAPEFFECT_DISCARD;
         pp.BackBufferWidth = w;
         pp.BackBufferHeight = h;
@@ -78,7 +92,12 @@ int main( int argc, char **argv )
                                           D3DCREATE_SOFTWARE_VERTEXPROCESSING, &pp, &dev );
         else
             hr = IDirect3DDevice9_Reset( dev, &pp );
-        printf( "t=%.1f mode %dx%d hr=%#lx\n", (GetTickCount() - t0) / 1000.0, w, h, hr );
+        {
+            RECT wr;
+            GetWindowRect( hwnd, &wr );
+            printf( "t=%.1f mode %s hr=%#lx window %ldx%ld\n", (GetTickCount() - t0) / 1000.0, argv[i], hr,
+                    wr.right - wr.left, wr.bottom - wr.top );
+        }
         fflush( stdout );
         if (FAILED(hr)) return 1;
 
@@ -89,9 +108,12 @@ int main( int argc, char **argv )
             if (GetTickCount() >= next_report)
             {
                 POINT pt;
+                RECT cr;
                 GetCursorPos( &pt );
-                printf( "t=%.1f cursor %ld,%ld move %d,%d\n", (GetTickCount() - t0) / 1000.0, pt.x, pt.y,
-                        last_move == -1 ? -1 : (short)LOWORD(last_move), last_move == -1 ? -1 : (short)HIWORD(last_move) );
+                GetClientRect( hwnd, &cr );
+                printf( "t=%.1f cursor %ld,%ld move %d,%d client %ldx%ld\n", (GetTickCount() - t0) / 1000.0, pt.x, pt.y,
+                        last_move == -1 ? -1 : (short)LOWORD(last_move), last_move == -1 ? -1 : (short)HIWORD(last_move),
+                        cr.right, cr.bottom );
                 fflush( stdout );
                 next_report = GetTickCount() + 1000;
             }
