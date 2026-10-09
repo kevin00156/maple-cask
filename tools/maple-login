@@ -238,12 +238,12 @@ def save_remembered(account: dict) -> None:
 # -----------------------------------------------------------------------------
 
 
-def png_dark(png: bytes):
-    """解 PNG,回傳 (寬, 高, dark(x, y))。看不懂的格式回 None。
+def png_rgb(png: bytes):
+    """解 PNG,回傳 (寬, 高, rgb(x, y) -> (r, g, b))。看不懂的格式回 None。
 
-    只認 bit depth 8、非交錯 —— 伺服器那張就是(250x250 RGB)。
+    只認 bit depth 8、非交錯 —— QR 那張(250x250 RGB)和 gamescope 的截圖(RGBA)都是。
     刻意不用 Pillow:這支工具只靠 requests,多一個相依就多一種
-    「在別人機器上跑不起來」。
+    「在別人機器上跑不起來」。1920x1080 約 1 秒。
     """
     if png[:8] != b"\x89PNG\r\n\x1a\n":
         return None
@@ -306,18 +306,33 @@ def png_dark(png: bytes):
         if len(plte) < 3:
             return None
 
-        def dark(x: int, y: int) -> bool:
+        def rgb(x: int, y: int) -> tuple:
             k = out[y * stride + x] * 3
-            return plte[k] * 299 + plte[k + 1] * 587 + plte[k + 2] * 114 < 128000
+            return plte[k], plte[k + 1], plte[k + 2]
     elif chans >= 3:
 
-        def dark(x: int, y: int) -> bool:
+        def rgb(x: int, y: int) -> tuple:
             k = y * stride + x * chans
-            return out[k] * 299 + out[k + 1] * 587 + out[k + 2] * 114 < 128000
+            return out[k], out[k + 1], out[k + 2]
     else:
 
-        def dark(x: int, y: int) -> bool:
-            return out[y * stride + x * chans] < 128
+        def rgb(x: int, y: int) -> tuple:
+            v = out[y * stride + x * chans]
+            return v, v, v
+
+    return w, h, rgb
+
+
+def png_dark(png: bytes):
+    """解 PNG,回傳 (寬, 高, dark(x, y))。看不懂的格式回 None。"""
+    img = png_rgb(png)
+    if img is None:
+        return None
+    w, h, rgb = img
+
+    def dark(x: int, y: int) -> bool:
+        r, g, b = rgb(x, y)
+        return r * 299 + g * 587 + b * 114 < 128000
 
     return w, h, dark
 
@@ -731,17 +746,66 @@ def has_https(pid: str) -> bool:
     return False
 
 
+# 登入表單的位置(佔截圖的比例):帳號、密碼兩格白底,下面一顆純色的「登入」鈕。
+# 登入畫面固定 1366x768,gamescope 等比放滿截圖,所以用比例;取點避開格子裡的字和游標。
+# 2026-10-09 量的:鈕 (7,158,191),x 0.40~0.60、y 0.51~0.57;帳號格 y 0.41、密碼格 y 0.47。
+FORM_BUTTON = ((7, 158, 191), [(x / 100, y / 100) for x in (43, 47, 50, 53, 57) for y in (52, 54, 56)])
+FORM_FIELDS = ((255, 255, 255), [(x / 100, y / 100) for x in (47, 50, 53) for y in (41, 47)])
+
+
+def login_form_visible(png: bytes) -> bool:
+    img = png_rgb(png)
+    if img is None:
+        return False
+    w, h, rgb = img
+    return all(max(abs(a - b) for a, b in zip(rgb(int(fx * w), int(fy * h)), color)) <= 24
+               for color, pts in (FORM_BUTTON, FORM_FIELDS) for fx, fy in pts)
+
+
+def game_screenshot(pid: str) -> bytes | None:
+    """用遊戲所在的那個 gamescope 截一張圖。不在 gamescope 裡(或找不到 gamescopectl)回 None。
+
+    display 和 PATH 從遊戲行程的環境拿:多開時每組各有自己的 gamescope-N,
+    gamescopectl 是自建 gamescope 的那份(env.sh 放進 PATH 的),不一定在我們的 PATH 裡。
+    gamescopectl 回來時檔案還不一定寫完,等到 PNG 結尾的 IEND 出現。
+    """
+    try:
+        with open(f"/proc/{pid}/environ", "rb") as f:
+            env = dict(kv.split(b"=", 1) for kv in f.read().split(b"\0") if b"=" in kv)
+    except OSError:
+        return None
+    display = env.get(b"GAMESCOPE_WAYLAND_DISPLAY", b"").decode()
+    ctl = shutil.which("gamescopectl", path=env.get(b"PATH", b"").decode() or None)
+    if not display or not ctl:
+        return None
+    path = os.path.join(runtime_dir(), f"login-{pid}.png")
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+    subprocess.run([ctl, "screenshot", path], env={**os.environ, "GAMESCOPE_WAYLAND_DISPLAY": display},
+                   capture_output=True, check=False, timeout=10)
+    for _ in range(20):
+        try:
+            with open(path, "rb") as f:
+                png = f.read()
+            if png.endswith(b"IEND\xaeB`\x82"):
+                os.unlink(path)
+                return png
+        except OSError:
+            pass
+        time.sleep(0.1)
+    return None
+
+
 def wait_for_login_screen(timeout_sec: int) -> bool:
     """等遊戲載到登入表單。等到回 True。
 
     給「先開遊戲、再鑄 OTP」這個順序用的:OTP 只有 2 分鐘的窗口,表單出現了才鑄。
-    訊號是 MapleStory.exe 的第一條 :443 連線。2026-09-27 經 gamescope 實測:
-        視窗 t=4、8484 t=6(都在 NEXON Logo 之前,不能用)
-        第一條 443 t=33~36(5 輪),截圖對到的兩輪表單在 t=35~36 / ≤40(對方 IP 每次不同,只能看 port)
-        另兩輪載得慢(443 在 t=55/57),gamescopectl 截圖:命中那刻還在 LOADING,3 秒後表單已出現
-        ——所以不能用固定延遲,命中後那 3 秒也不能省。另有一輪 t=19 就命中,沒截到圖,原因未查明
-    驗證截圖用 GAMESCOPE_WAYLAND_DISPLAY=<遊戲的> gamescopectl screenshot <路徑.png>(不怕視窗被蓋)
-    以前等的是「視窗存在」,t=4 就放行,OTP 打進 Logo 畫面整張燒掉。
+    MapleStory.exe 的第一條 :443 連線只當「可以開始看畫面」:2026-09-27 量的 5 輪都在表單前後幾秒,
+    但 2026-10-09 有一輪 t=18.7 就連了一條(35.79.162.214),那時還在 gamania Logo、表單 t≈33 才出來,
+    以前「443 + 3 秒」就把 OTP 打進 Logo 整張燒掉。所以過了 443 之後截圖確認表單真的在(login_form_visible)。
+    不在 gamescope 裡沒辦法截圖,退回舊的「443 + 3 秒」。
     """
     print(f"  等遊戲載到登入表單(最多 {timeout_sec} 秒)…", flush=True)
     deadline = time.monotonic() + timeout_sec
@@ -753,8 +817,13 @@ def wait_for_login_screen(timeout_sec: int) -> bool:
                         continue   # BlackCipher 之類也 map 了遊戲目錄,但不是它
             except OSError:
                 continue
-            if has_https(pid):
-                time.sleep(3)      # 命中時可能還在 LOADING,實測 3 秒內表單都出來了
+            if not has_https(pid):
+                continue
+            png = game_screenshot(pid)
+            if png is None:
+                time.sleep(3)      # 舊判準:命中時可能還在 LOADING,9/27 實測 3 秒內表單都出來了
+                return True
+            if login_form_visible(png):
                 return True
         time.sleep(0.5)
     return False
