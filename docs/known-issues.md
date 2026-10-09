@@ -238,7 +238,15 @@ Xwayland 的假模式),主執行緒切完就停在 poll 不再前進,另一條�
 - 三組多開並行測試會互相干擾(最後啟動的那組 1/6,舊設定也斷),量這種 race 要單開循序跑。
 
 **要 1920×1080**:遊戲改成視窗模式、遊戲裡選 1920×1080。`tools/gs-run.sh` 沒給 `GS_ARGS` 時讀 `soScreenMode`:
-視窗模式就用 `soResolutionWidth/Height` 當內部解析度,全螢幕一律 1366×768,不會再組出「全螢幕 + 1920」。
+視窗模式用 `-w 1920 -h 1080 -W <soResolutionWidth> -H <soResolutionHeight>`,全螢幕一律 1366×768,不會再組出「全螢幕 + 1920」。
+
+nested(`-w/-h`)跟 output(`-W/-H`)要分開給(2026-10-09):遊戲選單的上限是 nested,畫面是不是 1:1 看 output。
+原本只給 `-W/-H`(nested 跟著等於 output)= 拿遊戲上次選的解析度去限制這次能選的 —— 選過 1366 就只開 1366、選單裡沒有 1920,
+永遠選不回去。gamescope 的縮放是 `(nested ÷ 視窗) × (output ÷ nested) = output ÷ 視窗`(`steamcompmgr.cpp` `calc_scale_factor_scaler`),
+nested 約掉,所以 output = 遊戲解析度就是 1:1。遊戲裡換解析度的那一輪會縮放,重開就對。
+探針(`PROBE_MODES="w1366x768:8 r1024x768:8 w1366x768:6" tools/dev/modetest.sh Y -w 1920 -h 1080 -W 1366 -H 768`):
+1366 的 popup 沒被 gamescope 撐成 root 大小(client 一直 1366×768),拍賣場 1024×768 照比例置中。
+headless 截圖是 nested 大小(`gamescopectl` 傳不了截圖種類),output 那張截不到,1:1 靠上面的公式。
 
 ### 視窗模式進拍賣場只畫在左上角 → patches/gamescope-0002 + 0003
 進拍賣場時遊戲把 1920×1080 的 `WS_POPUP`(style `94080000`)換成可調整大小的 1032×802 視窗(style `14ce0000`,

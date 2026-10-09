@@ -4,8 +4,10 @@
 #   - 遊戲活在 gamescope 自己的 Xwayland 裡,永遠是唯一有焦點的視窗:不會搶你桌面的焦點,
 #     你切去別的視窗時它也不會收到 deactivate。
 # 前提:遊戲已關、wineserver 已死(wine 的 explorer desktop 得在 gamescope 的 Xwayland 上重生)。
-#   W/H = gamescope 內部解析度。沒給 GS_ARGS 時照遊戲自己存的設定挑(docs/known-issues.md「拍賣場被拉伸」):
-#     遊戲是「視窗模式」→ 遊戲設定的解析度(1:1 最清楚);
+#   沒給 GS_ARGS 時照遊戲自己存的設定挑(docs/known-issues.md「拍賣場被拉伸」):
+#     遊戲是「視窗模式」→ -w/-h(遊戲選單能選的上限)固定 1920x1080,-W/-H(gamescope 視窗)= 遊戲設定的解析度。
+#                        gamescope 把遊戲視窗縮放成 -W/-H ÷ 視窗大小,跟 -w/-h 無關,所以照樣 1:1;
+#                        兩者若綁在一起,選了 1366 下次就只開 1366、選單選不回 1920。遊戲裡換解析度,重開才回到 1:1。
 #     遊戲是「全螢幕」  → 固定 1366x768 = 登入畫面的解析度。換別的,登入畫面要切非原生模式 → 卡死斷線(實測 1/12)。
 #   要自己指定:GS_ARGS="-W 1366 -H 768 -f" tools/gs-run.sh
 #   要用自建的 gamescope(中文輸入法候選窗,patches/gamescope-0001),把它的 bin/ 放進 PATH 最前面即可(env.sh 裡設)。
@@ -27,7 +29,7 @@ game_size() {
     grep -q '^"soScreenMode"=dword:00000001' "$reg" 2>/dev/null || { echo "-W 1366 -H 768"; return; }
     w=$(sed -n 's/^"soResolutionWidth"=dword:\([0-9a-f]*\).*/\1/p' "$reg")
     h=$(sed -n 's/^"soResolutionHeight"=dword:\([0-9a-f]*\).*/\1/p' "$reg")
-    [ -n "$w" ] && [ -n "$h" ] && echo "-W $((16#$w)) -H $((16#$h))" || echo "-W 1366 -H 768"
+    [ -n "$w" ] && [ -n "$h" ] && echo "-w 1920 -h 1080 -W $((16#$w)) -H $((16#$h))" || echo "-W 1366 -H 768"
 }
 GS_ARGS=${GS_ARGS:-$(game_size)}
 echo "gamescope $GS_ARGS"
