@@ -33,6 +33,13 @@ export XMODIFIERS="${XMODIFIERS:-@im=fcitx}"
 if [ "$(cat /proc/sys/kernel/split_lock_mitigate 2>/dev/null)" = 1 ]; then
     echo "警告:kernel.split_lock_mitigate=1,遊戲主執行緒會一直被罰睡 → 卡頓。修法見 docs/known-issues.md「split lock」" >&2
 fi
+# ntsync:同步呼叫不必全排隊到單執行緒的 wineserver。沒有就退回 wineserver,能玩,只是只在做得到的時候提醒
+# (v0.1.4 以前的 release runner 都沒編進去;kernel 太舊沒有這個模組就不提)。
+if ! grep -qa ntsync "$WINE_ROOT/bin/wineserver"; then
+    echo "提示:這個 wine runner 沒編進 ntsync;maple update 可換成有 ntsync 的版本" >&2
+elif [ ! -w /dev/ntsync ] && modinfo ntsync >/dev/null 2>&1; then
+    echo "提示:ntsync 模組沒載入:sudo modprobe ntsync(永久:echo ntsync | sudo tee /etc/modules-load.d/ntsync.conf)" >&2
+fi
 
 # 不 exec wine,留在這裡收尾。gamescope 視窗按 X = gamescope 對自己 raise(SIGTERM) → gamescopereaper 對整棵行程樹
 # 同時送 SIGTERM:wineserver 收到就直接退出、不收 client,剩下的 wine 行程(實測是 winedevice.exe)卡在自己的
