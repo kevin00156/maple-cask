@@ -293,6 +293,32 @@ keyrepeat-probe 驗證(獨立 prefix、gamescope 內、按住 2 秒):Shift / Ctr
   300/62(約 16ms),遊戲吃得下。要調就改 prefix 的 `HKCU\Control Panel\Keyboard`。
 - 一般鍵的速率從此由 wine 決定,**`xset r rate` 對遊戲不再有效**。
 
+## 間歇卡頓、畫面忽快忽慢:kernel 的 split lock 懲罰 → `kernel.split_lock_mitigate=0`(2026-10-23)
+症狀:同一個場景有時順有時卡,打王時特別明顯;MangoHud 看平均幀率不低,但 1% low 很差。
+
+**根因**:遊戲行程裡的反作弊模組(NGS,`NGClient64.aes` 載入的那段程式碼)每 ~30ms 在**遊戲主執行緒**
+做一次跨 cache line 的 lock 指令(split lock)。Windows 不管這個;Linux 在支援 split lock 偵測的 CPU 上
+(Intel 較新的 CPU,12 代桌機起都有)預設 `kernel.split_lock_mitigate=1`,每抓到一次就**故意讓該執行緒睡 10ms**
+(`arch/x86/kernel/cpu/bus_lock.c` `split_lock_warn()` 的 "misery factor")。
+
+實測(i7-14700F,kernel 7.0,站著不動的場景):主執行緒每 29ms 被睡 10-12ms 一次 = **33 次/秒,36% 的時間在睡**;
+DXVK 送幀變成「2ms 一張連發 6-8 張,然後停 16ms」。dmesg 只在每個行程第一次時印一行,看起來不嚴重,其實每次都在罰:
+
+    x86/split lock detection: #AC: MapleStory.exe/2074273 took a split_lock trap at address: 0x7ba3e139
+
+同樣間隔的 split lock 用 10 行 C 重現:每次 11-15ms。
+
+**修法**(需要 root,立刻生效,遊戲不必重開):
+```bash
+sudo sysctl kernel.split_lock_mitigate=0                                    # 這次開機
+echo 'kernel.split_lock_mitigate = 0' | sudo tee /etc/sysctl.d/99-split-lock.conf  # 永久
+```
+`=0` 只是不罰睡,偵測與 dmesg 警告照舊。SteamOS 等遊戲向發行版預設就關;Proton 上的遊戲遇到的是同一件事。
+`run.sh` 啟動時若看到 `=1` 會印警告。
+
+修好之後也重測過把整個 prefix 綁在 P-core(大小核 CPU 上的常見建議):三輪交錯各 60 秒,p99 6.8 → 6.5ms,
+感覺不出來,所以 `run.sh` 不綁(P-core 少的筆電綁了反而可能更慢)。想綁自己 `taskset -c <P-core> maple`。
+
 ## 取得帳號 sid 與 OTP
 遊戲登入表單的「帳號」要填 beanfun 的遊戲帳號 **sid**(`T9…` 那串),不是帳號名稱。
 用 `tools/maple-login`:session 失效會自動帶你掃 QR,列出所有帳號與 sid,鑄一張新的 OTP,

@@ -29,6 +29,11 @@ if ! xprop -root XIM_SERVERS 2>/dev/null | grep -q '@server='; then
 fi
 export XMODIFIERS="${XMODIFIERS:-@im=fcitx}"
 
+# 反作弊在主執行緒上每 ~30ms 一次 split lock,kernel 預設每次罰睡 10ms → 間歇卡頓(docs/known-issues.md)
+if [ "$(cat /proc/sys/kernel/split_lock_mitigate 2>/dev/null)" = 1 ]; then
+    echo "警告:kernel.split_lock_mitigate=1,遊戲主執行緒會一直被罰睡 → 卡頓。修法見 docs/known-issues.md「split lock」" >&2
+fi
+
 # 不 exec wine,留在這裡收尾。gamescope 視窗按 X = gamescope 對自己 raise(SIGTERM) → gamescopereaper 對整棵行程樹
 # 同時送 SIGTERM:wineserver 收到就直接退出、不收 client,剩下的 wine 行程(實測是 winedevice.exe)卡在自己的
 # wait pipe 上永遠不死,reaper 沒有逾時地等它們 → gamescope 視窗「沒有回應」。所以 TERM 由這裡把整個 prefix 收乾淨。

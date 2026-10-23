@@ -48,6 +48,9 @@ tools/maple update
 
 # 3. 把 maple 放進 PATH(~/.local/bin 是這步才建的話,要重新登入 PATH 才會有它)
 mkdir -p ~/.local/bin && ln -sf "$PWD/tools/maple" ~/.local/bin/maple
+
+# 4. 關掉 kernel 對 split lock 的罰睡 —— 不關的話反作弊會讓遊戲主執行緒每秒被睡 30 多次、每次 10ms(間歇卡頓)
+echo 'kernel.split_lock_mitigate = 0' | sudo tee /etc/sysctl.d/99-split-lock.conf && sudo sysctl --system
 ```
 想自己編 wine,或要看得到中文輸入法的候選窗:[docs/building.md](docs/building.md)。
 
