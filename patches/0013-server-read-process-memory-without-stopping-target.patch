@@ -1,0 +1,60 @@
+server: Read another process's memory with process_vm_readv, without stopping it.
+
+read_process_memory() PTRACE_ATTACHes the first thread of the target
+process (its main thread), waits for the SIGSTOP, reads, and detaches -
+for every single NtReadVirtualMemory.  Windows does not stop anything to
+serve ReadProcessMemory, and a caller that reads another process thousands
+of times a second (MapleStory TW's BlackCipher64 does, in bursts of a few
+seconds every few seconds since the 2026-10-21 game update) keeps the
+target's main thread stopped for a large part of the time.
+
+In game, 1-second samples during a burst: BlackCipher64 at 55-65% CPU,
+wineserver at 25-29%, and the game's main thread falling from ~50% to
+~20%; the game stutters.  perf on wineserver during play: 22% in
+suspend_for_ptrace, 15% in read_process_memory, ~24% in ptrace / wait4.
+ntsync does not help (it takes the game's own waits off the server, not
+this).
+
+On Linux, try process_vm_readv() first.  It needs the same ptrace access
+the old path already has, stops nothing, and is one syscall.  A short or
+failed read falls back to the ptrace path unchanged, so error codes stay
+the same (unmapped address and a read across the end of a mapping still
+fail with ERROR_NOACCESS / got=0, measured).
+
+Measured with a child whose main thread spins a counter while the parent
+ReadProcessMemory()s 4 KB from it as fast as it can, for one second:
+
+                        child speed vs idle   reads/s
+    before              46-55%                67-73k
+    after               98-99%                160k
+
+---
+--- a/server/ptrace.c
++++ b/server/ptrace.c
+@@ -28,6 +28,9 @@
+ #include <stdarg.h>
+ #include <sys/types.h>
+ #include <sys/wait.h>
++#ifdef __linux__
++# include <sys/uio.h>
++#endif
+ #ifdef HAVE_SYS_PTRACE_H
+ # include <sys/ptrace.h>
+ #endif
+@@ -355,6 +358,16 @@
+         return 0;
+     }
+ 
++#ifdef __linux__
++    /* no need to stop a thread of the target: try a direct copy first,
++     * and only fall back to ptrace if it does not read everything */
++    if (process->unix_pid != -1)
++    {
++        struct iovec local = { dest, size }, remote = { (void *)(unsigned long)ptr, size };
++        if (process_vm_readv( process->unix_pid, &local, 1, &remote, 1, 0 ) == size) return 1;
++    }
++#endif
++
+     first_offset = ptr % sizeof(long);
+     last_offset = (size + first_offset) % sizeof(long);
+     if (!last_offset) last_offset = sizeof(long);
