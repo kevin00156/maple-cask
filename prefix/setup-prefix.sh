@@ -9,9 +9,36 @@
 #   FONTS_DIR   一份 Windows 的 C:\Windows\Fonts 複本(至少要有 mingliu.ttc),沒給字會糊但能玩
 #
 # 步驟:ACP=950 建 prefix → 登錄檔 → DXVK/vkd3d-proton → VC++ 2022 runtime(winetricks 抓微軟官方 redist)→ 字型
+#
+# setup-prefix.sh --check:只讀,看第 1~4 步的產物都在不在(只要 WINEPREFIX)。maple / run.sh 開遊戲前跑;
+# 缺了就印出缺哪些、exit 1。第 5 步字型是選用的,不查。
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
+SYS32=${WINEPREFIX:-}/drive_c/windows/system32
+WOW64=${WINEPREFIX:-}/drive_c/windows/syswow64
+
+# 不是 wine 自己的 dll。setup 沒跑完的 prefix 裡,system32 的 d3d/dxgi 是 wine builtin 版(檔頭有這個標記);
+# run.sh 強制這幾個 =n,遇到它就是 "dxgi.dll ... not found"
+native() { [ -f "$1" ] && ! head -c 128 "$1" | grep -qa 'Wine builtin DLL'; }
+
+# 每一步從第一版就有,所以任何版本只要 setup 跑完過都會過
+check() {
+    local d miss=()
+    grep -q '^"ACP"="950"' "$WINEPREFIX/system.reg" 2>/dev/null || miss+=("1. ACP 不是 950")
+    grep -qi '^\[Software\\\\Gamania\\\\MapleStory\]' "$WINEPREFIX/system.reg" 2>/dev/null || miss+=("2. 登錄檔(Gamania)")
+    for d in d3d11 d3d10core dxgi d3d9 d3d12 d3d12core; do native "$SYS32/$d.dll" || miss+=("3. system32/$d.dll"); done
+    for d in d3d11 d3d10core dxgi d3d9; do native "$WOW64/$d.dll" || miss+=("3. syswow64/$d.dll"); done
+    native "$SYS32/vcruntime140_threads.dll" || miss+=("4. system32/vcruntime140_threads.dll")
+    [ ${#miss[@]} -eq 0 ] && return 0
+    echo "prefix 沒建完($WINEPREFIX),缺:${miss[*]}" >&2
+    echo "  補:maple setup(多開第 N 組:maple -N setup),或 source env.sh 後跑 prefix/setup-prefix.sh" >&2
+    return 1
+}
+if [ "${1:-}" = --check ]; then
+    : "${WINEPREFIX:?請設定 WINEPREFIX}"
+    check; exit
+fi
 : "${WINE_ROOT:?請設定 WINE_ROOT}" "${WINEPREFIX:?請設定 WINEPREFIX}" "${GAME_DIR:?請設定 GAME_DIR}"
 WINE=$WINE_ROOT/bin/wine
 WINESERVER=$WINE_ROOT/bin/wineserver
@@ -21,8 +48,6 @@ export WINE WINESERVER WINEPREFIX WINEARCH=win64
 export WINEDEBUG=-all WINEDLLOVERRIDES="mscoree,mshtml="
 # code page 950 是在 prefix「建立時」由 locale 決定的,之後改沒用;所以整支腳本都跑在 zh_TW
 export LANG=zh_TW.UTF-8 LC_ALL=zh_TW.UTF-8
-SYS32=$WINEPREFIX/drive_c/windows/system32
-WOW64=$WINEPREFIX/drive_c/windows/syswow64
 
 echo "== 1. prefix =="
 # wine 只建 prefix 這一層;上一層不存在(新機:~/.local/share/maplestory-tw 還沒有)它會直接失敗
@@ -97,4 +122,5 @@ else
     echo "   (至少 mingliu.ttc)複製到某處,設 FONTS_DIR 指過去再跑一次本腳本。"
 fi
 
+check || exit 1     # 上面各步與 --check 的清單對不上,在這裡就會現形
 echo "== 完成:WINEPREFIX=$WINEPREFIX =="

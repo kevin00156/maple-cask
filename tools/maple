@@ -78,18 +78,11 @@ ours() {
 game_running() { ours -f 'MapleStory\.exe'; }
 ws_running()   { ours -x wineserver; }
 
-# setup-prefix 沒跑完(中途失敗、或 maple update 之前就先開過遊戲,wine 自己建了空 prefix)時,
-# system32/dxgi.dll 是 wine 自己的;run.sh 強制 dxgi=n,遊戲一定起不來 —— 現在講,不要等登入表單 240 秒
-prefix_ok() {
-    local f=$WINEPREFIX/drive_c/windows/system32/dxgi.dll
-    [ -f "$f" ] && ! head -c 128 "$f" | grep -qa 'Wine builtin DLL' && return 0
-    echo "prefix 沒建完($WINEPREFIX 裡沒有 DXVK):maple${MAPLE_INSTANCE:+ -$MAPLE_INSTANCE} setup" >&2
-    return 1
-}
 
 cmd_game() {
     if game_running; then echo "遊戲已經在跑,不重開"; return 0; fi
-    prefix_ok
+    # setup 沒跑完(中途失敗、或 maple update 之前就先開過遊戲,wine 自己建了空 prefix)遊戲起不來 —— 現在講,不要等登入表單 240 秒
+    "$HERE/../prefix/setup-prefix.sh" --check
     if ws_running; then
         echo "wineserver 還活著但沒遊戲 → 先殺,不然 explorer 的 desktop 留在錯的 display"
         "$HERE/kill-prefix.sh"
