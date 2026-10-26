@@ -22,10 +22,14 @@ mkdir -p "$(dirname "$MAPLE_LOG")"
 echo "log:$MAPLE_LOG"
 exec > >(tee -a "$MAPLE_LOG") 2>&1
 
+# setup 沒跑完的 prefix,遊戲只會留一行 "dxgi.dll ... not found" 就退出。maple 開遊戲前也查,這裡顧直接跑 gs-run.sh / Lutris 的人
+"$REPO/prefix/setup-prefix.sh" --check
+
 # gamescope 的巢狀 Xwayland 上沒有 XIM server(fcitx5 只註冊在 KWin 的那個 display),中文輸入法會完全沒反應。
 # 請 fcitx5 多接這個 display;wine 只在視窗拿到焦點時建 XIC,所以必須在 wine 啟動前做。不走 gamescope 時已有 server,自動跳過。
 if ! xprop -root XIM_SERVERS 2>/dev/null | grep -q '@server='; then
-    busctl --user call org.fcitx.Fcitx5 /controller org.fcitx.Fcitx.Controller1 OpenX11Connection s "$DISPLAY" || true
+    busctl --user call org.fcitx.Fcitx5 /controller org.fcitx.Fcitx.Controller1 OpenX11Connection s "$DISPLAY" >/dev/null 2>&1 ||
+        echo "提示:沒有 fcitx5,遊戲裡打不了中文(只支援 fcitx5;IBus 見 docs/known-issues.md「遊戲內打不出中文」)" >&2
 fi
 export XMODIFIERS="${XMODIFIERS:-@im=fcitx}"
 
@@ -35,9 +39,13 @@ if [ "$(cat /proc/sys/kernel/split_lock_mitigate 2>/dev/null)" = 1 ]; then
 fi
 # ntsync:同步呼叫不必全排隊到單執行緒的 wineserver。沒有就退回 wineserver,能玩,只是只在做得到的時候提醒
 # (v0.1.4 以前的 release runner 都沒編進去;kernel 太舊沒有這個模組就不提)。
-if ! grep -qa ntsync "$WINE_ROOT/bin/wineserver"; then
+# 查裝置路徑字串,不是 "ntsync":自建 runner 的安裝路徑常帶這個字,編進去的路徑會讓它永遠成立。
+# 模組在不在看 modules.dep,不用 modinfo:Debian 一般使用者的 PATH 沒有 /usr/sbin。
+if ! grep -qaF /dev/ntsync "$WINE_ROOT/bin/wineserver"; then
     echo "提示:這個 wine runner 沒編進 ntsync;maple update 可換成有 ntsync 的版本" >&2
-elif [ ! -w /dev/ntsync ] && modinfo ntsync >/dev/null 2>&1; then
+elif [ -e /dev/ntsync ]; then
+    [ -w /dev/ntsync ] || echo "提示:/dev/ntsync 沒有寫入權限(ls -l /dev/ntsync),ntsync 用不了" >&2
+elif grep -q '/ntsync\.ko' "/lib/modules/$(uname -r)/modules.dep" 2>/dev/null; then
     echo "提示:ntsync 模組沒載入:sudo modprobe ntsync(永久:echo ntsync | sudo tee /etc/modules-load.d/ntsync.conf)" >&2
 fi
 

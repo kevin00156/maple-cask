@@ -107,7 +107,7 @@ curl -sSLo ~/.local/bin/winetricks https://raw.githubusercontent.com/Winetricks/
 f=$(curl -s https://archlinux.org/packages/extra/x86_64/cabextract/json/ | python3 -c 'import json,sys;print(json.load(sys.stdin)["filename"])')
 curl -sSLO https://geo.mirror.pkgbuild.com/extra/os/x86_64/$f && tar -xf $f usr/bin/cabextract
 install -m755 usr/bin/cabextract ~/.local/bin/ && chmod +x ~/.local/bin/winetricks
-export PATH=~/.local/bin:$PATH      # 然後重跑 tools/maple update(或 prefix/setup-prefix.sh)
+export PATH=~/.local/bin:$PATH      # 然後 maple setup(不是 maple update:已是最新版時它不會重跑 setup)
 ```
 補上這兩個之後,`setup-prefix.sh` 全部完成。
 
@@ -138,6 +138,8 @@ WebView2 需要 DirectComposition,wine 沒有實作。本專案不處理那個 G
 症狀分兩層:gamescope 裡連輸入法都切不了;直接在 X 上能切、fcitx 有候選窗,但選定的字進不了遊戲。
 跟 wine base 無關(CrossOver 的 build 症狀相同)。修完之後:注音顯示在遊戲自己的輸入列、字正確送出、
 候選窗出現在遊戲視窗**左上角**(見最後一條)。
+**只支援 fcitx5**:斷點 1 的修法是 fcitx5 的 DBus 介面;IBus 沒有對應的「接上另一個 X display」,在 gamescope 裡打不了中文
+(沒測過、也沒做)。沒有 fcitx5 時 `run.sh` 會印一行提示。
 
 斷點與修法,由外往內:
 
