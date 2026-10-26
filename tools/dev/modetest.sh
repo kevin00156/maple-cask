@@ -14,6 +14,7 @@
 # 輸出:$OUT(預設 /tmp/modetest-<時間>)/ s*.png、probe.txt、x.txt、gs.log,最後印量測結果。
 set -euo pipefail
 HERE=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
+# shellcheck source=/dev/null  # 使用者自己的設定檔,不在 repo 裡
 [ -n "${WINE_ROOT:-}" ] || source "${MAPLE_ENV:-${XDG_CONFIG_HOME:-$HOME/.config}/maplestory-tw/env.sh}"
 emu=${1:-Y}; shift || true
 [ $# -gt 0 ] || set -- -W 1920 -H 1080
@@ -46,6 +47,7 @@ for i in $(seq 30); do
     sleep 2
     kill -0 $gpid 2>/dev/null || break
     pt=$(tr ' ' '\n' <<<"${MOUSE_PTS:-}" | sed -n "s/^$((i * 2))@//p")
+    # shellcheck disable=SC2086  # 故意不加引號:把 "x,y" 拆成 xdotool 要的兩個參數
     [ -z "$pt" ] || { DISPLAY=$xd xdotool mousemove ${pt/,/ }; echo "t=$((i * 2)) mousemove $pt" >>"$OUT/x.txt"; }
     GAMESCOPE_WAYLAND_DISPLAY=$wl gamescopectl screenshot "$OUT/s$(printf %02d $((i * 2))).png" >/dev/null 2>&1 || true
 done
