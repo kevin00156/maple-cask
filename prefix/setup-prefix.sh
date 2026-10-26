@@ -17,6 +17,8 @@ set -euo pipefail
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 SYS32=${WINEPREFIX:-}/drive_c/windows/system32
 WOW64=${WINEPREFIX:-}/drive_c/windows/syswow64
+DXVK=(d3d11 d3d10core dxgi d3d9)    # 64 與 32 位元都要(NGS 那側是 32 位元);run.sh 的 WINEDLLOVERRIDES 要跟著改
+VKD3D=(d3d12 d3d12core)             # 只有 64 位元
 
 # 不是 wine 自己的 dll。setup 沒跑完的 prefix 裡,system32 的 d3d/dxgi 是 wine builtin 版(檔頭有這個標記);
 # run.sh 強制這幾個 =n,遇到它就是 "dxgi.dll ... not found"
@@ -27,8 +29,8 @@ check() {
     local d miss=()
     grep -q '^"ACP"="950"' "$WINEPREFIX/system.reg" 2>/dev/null || miss+=("1. ACP 不是 950")
     grep -qi '^\[Software\\\\Gamania\\\\MapleStory\]' "$WINEPREFIX/system.reg" 2>/dev/null || miss+=("2. 登錄檔(Gamania)")
-    for d in d3d11 d3d10core dxgi d3d9 d3d12 d3d12core; do native "$SYS32/$d.dll" || miss+=("3. system32/$d.dll"); done
-    for d in d3d11 d3d10core dxgi d3d9; do native "$WOW64/$d.dll" || miss+=("3. syswow64/$d.dll"); done
+    for d in "${DXVK[@]}" "${VKD3D[@]}"; do native "$SYS32/$d.dll" || miss+=("3. system32/$d.dll"); done
+    for d in "${DXVK[@]}"; do native "$WOW64/$d.dll" || miss+=("3. syswow64/$d.dll"); done
     native "$SYS32/vcruntime140_threads.dll" || miss+=("4. system32/vcruntime140_threads.dll")
     [ ${#miss[@]} -eq 0 ] && return 0
     echo "prefix 沒建完($WINEPREFIX),缺:${miss[*]}" >&2
@@ -56,7 +58,7 @@ mkdir -p "$WINEPREFIX"
 "$WINESERVER" -w
 acp=$(grep -m1 '^"ACP"' "$WINEPREFIX/system.reg" || true)
 case $acp in *950*) echo "   ACP=950 OK" ;;
-    *) echo "   ACP 不是 950(拿到:$acp)。系統要有 zh_TW.UTF-8 locale:sudo locale-gen zh_TW.UTF-8,然後刪掉 prefix 重跑"; exit 1 ;;
+    *) echo "   ACP 不是 950(拿到:$acp)。系統要有 zh_TW.UTF-8 locale(各發行版的做法見 README「需求」;locale -a 要看得到 zh_TW.utf8),然後刪掉 prefix 重跑"; exit 1 ;;
 esac
 
 echo "== 2. 登錄檔 =="
@@ -75,11 +77,11 @@ EOF
 "$WINESERVER" -w
 
 echo "== 3. DXVK + vkd3d-proton(64 與 32 位元都放)=="
-for d in d3d11 d3d10core dxgi d3d9; do
+for d in "${DXVK[@]}"; do
     cp -f "$WINE_ROOT/lib/wine/dxvk/x86_64-windows/$d.dll" "$SYS32/$d.dll"
-    [ -f "$WINE_ROOT/lib/wine/dxvk/i386-windows/$d.dll" ] && cp -f "$WINE_ROOT/lib/wine/dxvk/i386-windows/$d.dll" "$WOW64/$d.dll"
+    cp -f "$WINE_ROOT/lib/wine/dxvk/i386-windows/$d.dll" "$WOW64/$d.dll"
 done
-for d in d3d12 d3d12core; do
+for d in "${VKD3D[@]}"; do
     cp -f "$WINE_ROOT/lib/wine/vkd3d-proton/x86_64-windows/$d.dll" "$SYS32/$d.dll"
 done
 
