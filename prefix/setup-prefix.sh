@@ -41,7 +41,9 @@ if [ "${1:-}" = --check ]; then
     : "${WINEPREFIX:?請設定 WINEPREFIX}"
     check; exit
 fi
-: "${WINE_ROOT:?請設定 WINE_ROOT}" "${WINEPREFIX:?請設定 WINEPREFIX}" "${GAME_DIR:?請設定 GAME_DIR}"
+# 直接跑本腳本的人常忘了先載 env.sh(#5 的回報者就是),提示裡直接給兩種正確做法
+need="未設定;用 maple setup,或先 source ~/.config/maplestory-tw/env.sh 再跑本腳本"
+: "${WINE_ROOT:?$need}" "${WINEPREFIX:?$need}" "${GAME_DIR:?$need}"
 WINE=$WINE_ROOT/bin/wine
 WINESERVER=$WINE_ROOT/bin/wineserver
 [ -x "$WINE" ] || { echo "找不到 $WINE"; exit 1; }

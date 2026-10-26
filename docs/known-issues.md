@@ -107,7 +107,7 @@ curl -sSLo ~/.local/bin/winetricks https://raw.githubusercontent.com/Winetricks/
 f=$(curl -s https://archlinux.org/packages/extra/x86_64/cabextract/json/ | python3 -c 'import json,sys;print(json.load(sys.stdin)["filename"])')
 curl -sSLO https://geo.mirror.pkgbuild.com/extra/os/x86_64/$f && tar -xf $f usr/bin/cabextract
 install -m755 usr/bin/cabextract ~/.local/bin/ && chmod +x ~/.local/bin/winetricks
-export PATH=~/.local/bin:$PATH      # 然後重跑 tools/maple update(或 prefix/setup-prefix.sh)
+export PATH=~/.local/bin:$PATH      # 然後 maple setup(不是 maple update:已是最新版時它不會重跑 setup)
 ```
 補上這兩個之後,`setup-prefix.sh` 全部完成。
 
