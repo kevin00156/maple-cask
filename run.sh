@@ -29,9 +29,27 @@ if ! xprop -root XIM_SERVERS 2>/dev/null | grep -q '@server='; then
 fi
 export XMODIFIERS="${XMODIFIERS:-@im=fcitx}"
 
+# 反作弊在主執行緒上每 ~30ms 一次 split lock,kernel 預設每次罰睡 10ms → 間歇卡頓(docs/known-issues.md)
+if [ "$(cat /proc/sys/kernel/split_lock_mitigate 2>/dev/null)" = 1 ]; then
+    echo "警告:kernel.split_lock_mitigate=1,遊戲主執行緒會一直被罰睡 → 卡頓。修法見 docs/known-issues.md「split lock」" >&2
+fi
+# ntsync:同步呼叫不必全排隊到單執行緒的 wineserver。沒有就退回 wineserver,能玩,只是只在做得到的時候提醒
+# (v0.1.4 以前的 release runner 都沒編進去;kernel 太舊沒有這個模組就不提)。
+if ! grep -qa ntsync "$WINE_ROOT/bin/wineserver"; then
+    echo "提示:這個 wine runner 沒編進 ntsync;maple update 可換成有 ntsync 的版本" >&2
+elif [ ! -w /dev/ntsync ] && modinfo ntsync >/dev/null 2>&1; then
+    echo "提示:ntsync 模組沒載入:sudo modprobe ntsync(永久:echo ntsync | sudo tee /etc/modules-load.d/ntsync.conf)" >&2
+fi
+
 # 不 exec wine,留在這裡收尾。gamescope 視窗按 X = gamescope 對自己 raise(SIGTERM) → gamescopereaper 對整棵行程樹
 # 同時送 SIGTERM:wineserver 收到就直接退出、不收 client,剩下的 wine 行程(實測是 winedevice.exe)卡在自己的
 # wait pipe 上永遠不死,reaper 沒有逾時地等它們 → gamescope 視窗「沒有回應」。所以 TERM 由這裡把整個 prefix 收乾淨。
 trap '"$REPO/tools/kill-prefix.sh"; exit 143' TERM INT HUP
 "$WINE_ROOT/bin/wine" "$GAME_DIR/MapleStory.exe" &
+rc=0; wait $! || rc=$?   # set -e 下非 0 會直接退出,下面的等待就被跳過了
+# 遊戲版本舊了,MapleStory.exe 會叫起 Patcher.exe 然後自己先退。run.sh 這時退出 = reaper 的主行程死了,
+# 它就對整棵樹送 SIGTERM,Patcher 剛寫完 log 開頭就被殺,遊戲永遠更新不了(2026-10-07)。
+# 所以等這個 prefix 的 wine 全部走光再退;放背景再 wait,上面的 trap 才收得到訊號。
+"$WINE_ROOT/bin/wineserver" -w &
 wait $!
+exit $rc

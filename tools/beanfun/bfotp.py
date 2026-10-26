@@ -130,12 +130,11 @@ def log(msg: str) -> None:
 
 def _triple_des():
     """拿到 cryptography 的 TripleDES,不管它這版放在哪個模組。"""
-    from cryptography.hazmat.primitives.ciphers import algorithms
-
-    if hasattr(algorithms, "TripleDES"):
-        return algorithms.TripleDES
-    from cryptography.hazmat.decrepit.ciphers.algorithms import TripleDES
-
+    # 先試新位置:對舊位置做 hasattr 本身就會觸發 CryptographyDeprecationWarning
+    try:
+        from cryptography.hazmat.decrepit.ciphers.algorithms import TripleDES
+    except ImportError:
+        from cryptography.hazmat.primitives.ciphers.algorithms import TripleDES
     return TripleDES
 
 
@@ -624,7 +623,7 @@ def get_otp(
 
     m = RE_LONG_POLLING_KEY.search(body)
     if not m:
-        raise BFError(f"game_start_step2 沒有 longPollingKey。回應前 200 字:{body[:200]}")
+        raise BFError("game_start_step2 沒有 longPollingKey（服務或 session 可能異常）")
     long_polling_key = m.group(1)
 
     m = RE_UNK_DATA.search(body)
@@ -637,7 +636,7 @@ def get_otp(
     if not m:
         raise BFError("game_start_step2 沒有 ServiceAccountCreateTime")
     screatetime = m.group(1)
-    log(f"lpk={long_polling_key} createtime={screatetime}")
+    log("game_start_step2 必要欄位已取得")
 
     # --- 10b. m_objData:v2 的 LaunchTicket(或 pre-v2 的真 ppppp)都藏在這
     m = RE_OBJ_DATA.search(body)
@@ -717,11 +716,9 @@ def get_otp(
         try:
             reply = r.json()
         except ValueError:
-            raise BFError(f"get_webstart_otp_v2 回的不是 JSON:{r.text[:120]}")
+            raise BFError("get_webstart_otp_v2 回的不是 JSON")
         if reply.get("result") != 1:
-            raise BFError(
-                f"伺服器拒絕發 OTP(v2):{reply.get('message') or 'result=' + str(reply.get('result'))}"
-            )
+            raise BFError("伺服器拒絕發 OTP(v2)")
         payload = reply.get("data") or ""
         if len(payload) < 8:
             raise BFError(f"v2 的 data 太短,放不下 8 byte 金鑰:{len(payload)}")
@@ -750,9 +747,9 @@ def get_otp(
         raise BFError("get_webstart_otp 回了空字串")
     parts = envelope.split(";")
     if len(parts) < 2:
-        raise BFError(f"get_webstart_otp 回應格式不對:{envelope[:120]}")
+        raise BFError("get_webstart_otp 回應格式不對")
     if parts[0] != "1":
-        raise BFError(f"伺服器拒絕發 OTP:{parts[1]}")
+        raise BFError("伺服器拒絕發 OTP")
 
     payload = parts[1]
     if len(payload) < 8:

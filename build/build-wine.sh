@@ -67,7 +67,12 @@ echo "== 3. configure + make(WoW64:i386 + x86_64,$JOBS jobs)=="
 # 增量 make 會把舊 .o 當成最新的而不重編 —— 換 base 的時候那會把上一棵樹的產物連進來。
 case $OBJ in */obj) rm -rf "$OBJ" ;; *) echo "OBJ 路徑不對:$OBJ"; exit 1 ;; esac
 mkdir -p "$OBJ" && cd "$OBJ"
-"$SRC/configure" --enable-archs=i386,x86_64 --disable-tests --prefix="$OUT"
+# ntsync(/dev/ntsync)要 configure 時看得到 linux/ntsync.h,否則 wine 悄悄退回 wineserver 同步、什麼都不報;
+# CI 的 ubuntu-24.04 就沒有。所以一律用 build/include 裡那份(kernel 7.0 的 UAPI header,原樣複製),
+# build 主機有沒有都一樣;沒抓到就停,不要再發一版沒有 ntsync 的 runner(2026-10-23)。
+"$SRC/configure" --enable-archs=i386,x86_64 --disable-tests --prefix="$OUT" \
+    CPPFLAGS="-I$REPO/build/include ${CPPFLAGS:-}"
+grep -q '^#define HAVE_LINUX_NTSYNC_H 1' include/config.h || { echo "configure 沒抓到 linux/ntsync.h"; exit 1; }
 make -j"$JOBS"
 case $OUT in */out) rm -rf "$OUT" ;; *) echo "OUT 路徑不對:$OUT"; exit 1 ;; esac
 # install-lib = 只裝執行要的;install 會多帶 include/、.a import lib、winegcc 等開發用的東西(約 160MB)

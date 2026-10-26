@@ -1,0 +1,65 @@
+From: kevin <contact@qazsskevin.org>
+Subject: [PATCH] xwm: write _NET_WM_STATE back after a client message
+
+EWMH puts _NET_WM_STATE on a mapped window under the window manager's
+control: a client asks with a _NET_WM_STATE client message and the WM
+updates the property.  gamescope only updated its own isFullscreen /
+skipTaskbar / skipPager flags and never touched the property.
+
+Wine waits for the PropertyNotify on _NET_WM_STATE before it sends the
+configure that belongs to the state change (window_set_config: "is
+updating _NET_WM_STATE, delaying request").  A window leaving fullscreen
+therefore never shrinks: MapleStory in windowed 1920x1080 turns its
+1920x1080 WS_POPUP into a resizable 1032x802 window for the auction
+house, Wine asks to drop _NET_WM_STATE_FULLSCREEN, waits forever, and the
+1024x768 client area is left in the top-left corner of a 1920x1080 X
+window.
+
+Read the current property, apply ADD / REMOVE / TOGGLE for the atoms in
+the message (unknown atoms are kept as they are) and write it back.
+
+Tested (headless gamescope 1920x1080, a probe that does what the game
+does: 1920x1080 WS_POPUP -> style 0x14ce0000, SetWindowPos 1032x802,
+D3D9 windowed): before, X window stays 1920x1080 and the picture sits at
+(0,0)-(1024,768); after, X window is 1024x768 and gamescope scales it to
+1440x1080 centred.  Fullscreen mode switches (tools/dev/modetest.sh)
+unchanged.
+
+--- a/src/steamcompmgr.cpp
++++ b/src/steamcompmgr.cpp
+@@ -6497,6 +6497,35 @@
+ 			xwm_log.debugf("Unhandled NET_WM_STATE property change: %s", XGetAtomName(ctx->dpy, props[i]));
+ 		}
+ 	}
++
++	// EWMH: the window manager owns _NET_WM_STATE on mapped windows and must write the
++	// result back.  Wine waits for that PropertyNotify before it sends the configure that
++	// goes with the state change, so without it a window leaving fullscreen never shrinks
++	// (MapleStory's auction house stays a 1024x768 client in a 1920x1080 X window).
++	std::vector<Atom> state;
++	Atom actual_type;
++	int actual_format;
++	unsigned long nitems, bytes_after;
++	unsigned char *data = nullptr;
++	if (XGetWindowProperty(ctx->dpy, w->xwayland().id, ctx->atoms.netWMStateAtom, 0, 2048, false,
++			XA_ATOM, &actual_type, &actual_format, &nitems, &bytes_after, &data) == Success && data) {
++		if (actual_type == XA_ATOM && actual_format == 32)
++			state.assign((Atom *)data, (Atom *)data + nitems);
++		XFree(data);
++	}
++	for (size_t i = 0; i < 2; i++) {
++		if (props[i] == None)
++			continue;
++		auto it = std::find(state.begin(), state.end(), props[i]);
++		bool present = it != state.end();
++		bool want = action == NET_WM_STATE_ADD || (action == NET_WM_STATE_TOGGLE && !present);
++		if (want && !present)
++			state.push_back(props[i]);
++		else if (!want && present)
++			state.erase(it);
++	}
++	XChangeProperty(ctx->dpy, w->xwayland().id, ctx->atoms.netWMStateAtom, XA_ATOM, 32, PropModeReplace,
++			(unsigned char *)state.data(), state.size());
+ }
+ 
+ bool g_bLowLatency = false;

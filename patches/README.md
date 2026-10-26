@@ -16,6 +16,9 @@
 | 0010 | `win32u` IME 通知繞過被 subclass 的 IME 視窗 | 遊戲內打中文(遊戲換掉了 Default IME 視窗的 wndproc) | 可考慮送上游 |
 | 0011 | `imm32` IME UI 視窗隨 owner 死掉後重建 | 遊戲內打中文(wine bug:`imc->ui_hwnd` 指向死 handle) | **通用 bug,待送** |
 | 0012 | `winex11` 由 wineserver 做 Windows 式 auto-repeat | 綁在 Shift / Ctrl / Alt 的技能按住會連發(X server 寫死修飾鍵不 repeat) | 可考慮送上游 |
+| 0013 | `server` 跨行程讀記憶體改用 `process_vm_readv`,不再 ptrace 停住目標 | 2026-10-21 遊戲更新後的卡頓:BlackCipher 大量 `ReadProcessMemory`,每次都把遊戲主執行緒停住(被讀的執行緒實測只剩 46-55% 速度 → **98-99%**) | **通用 bug,待送** |
 | gamescope-0001 | gamescope 畫輸入法的 override-redirect 視窗(當 decoration 畫,不拿鍵盤焦點) | 中文輸入法候選窗(選用,`build/build-gamescope.sh`) | gamescope,可考慮送 |
+| gamescope-0002 | gamescope 收到 `_NET_WM_STATE` client message 後把屬性寫回(EWMH) | 視窗模式進拍賣場:wine 等這個寫回才縮小視窗,沒有就只畫在左上角 | **通用 bug,待送** |
+| gamescope-0003 | 不改幾何的 ConfigureRequest 回一個合成 ConfigureNotify(ICCCM 4.1.5) | 同上:登入 1366→1920 那次 wine 的請求沒回應,之後所有視窗變更都被 wine 延後(需 0002) | **通用 bug,待送** |
 
 量測用的探針在 [`tools/dev/`](../tools/dev/README.md)。

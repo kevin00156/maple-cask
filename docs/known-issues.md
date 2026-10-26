@@ -190,12 +190,80 @@ fcitx5 這邊需要 `~/.config/fcitx5/conf/xim.conf` 的 `UseOnTheSpot=True`(win
 KDE 的輸出縮放全是 1,不是 KWin 放大。
 
 - 要清楚只有一個條件:**遊戲解析度 = gamescope 視窗實際大小(1:1)**。遊戲選單上限 = gamescope 內部解析度
-  (`-W/-H`,或 `-w/-h`),所以 `GS_ARGS="-W 1920 -H 1080"` 就能選 1920×1080;但視窗被 KWin 或手動改了大小就又縮放。
+  (`-W/-H`,或 `-w/-h`),預設 `-W 1920 -H 1080`;視窗被 KWin 或手動改了大小就又縮放。
 - ⚠ **不要用 `-S integer`**:拍賣場等固定低解析度畫面不再被放大,貼在左上角留大片黑邊。
-- **內部解析度也不能拉高**(想選 1920×1080 就得 `-W 1920 -H 1080`):2026-09-27 實測拍賣場(固定 1024×768)
-  在「全畫面」模式下被 Xwayland 的解析度模擬拉伸成 16:9 變形;視窗模式下遊戲主視窗仍是 1920×1080、
-  畫面只畫在左上角 1024×768 → 大黑邊。1366×768 下拍賣場正常地只留左右黑邊。所以預設維持 1366×768。
-- 沒有解:使用者判斷不值得處理。
+
+## 拍賣場被拉伸成 16:9 → `EmulateModeset`;1920 只能用視窗模式 + gamescope-0002/0003(2026-10-03)
+症狀:進拍賣場(固定 1024×768)畫面被橫向拉滿,而不是左右補黑邊;內部解析度壓在 1366×768,遊戲選不到 1920×1080。
+
+**拉伸的根因**:拍賣場用 D3D9 獨占全螢幕切模式(DXVK log `Setting display mode: 1024x768`)。winex11 把它
+交給 gamescope 的 Xwayland(有 `XWAYLAND_FORCE_ENABLE_EXTRA_MODES` 的假模式),遊戲頂層視窗縮成 1024×768,
+但 Vulkan 畫的那個子視窗還是整個輸出大小,DXVK 的 swapchain 跟著是 1366×768;gamescope 依 swapchain 大小縮放 → 滿版、變形。
+
+**修法**:`HKCU\Software\Wine\X11 Driver` 的 `"EmulateModeset"="Y"`(上游 wine 本來就有,`prefix/reg/maplestory.reg`)。
+wine 不真的切模式,改用虛擬模式:視窗在實體座標上等比縮放、置中,swapchain 是遊戲要的 1024×768,gamescope
+照比例放、旁邊留黑。滑鼠座標由 win32u 換算回虛擬座標。
+
+探針實測(`tools/dev/modetest.sh`,headless gamescope + D3D9,不開遊戲):
+
+| 內部解析度 | EmulateModeset | 切 1024×768 的畫面 | 滑鼠 |
+|---|---|---|---|
+| 1366×768 | N(舊) | 1366×768,比例 1.779(拉伸) | — |
+| 1366×768 | Y | 1024×768 置中,比例 1.333 | (683,384)→512,384 |
+| 1920×1080 | Y | 1440×1080 置中,比例 1.333 | (960,540)→512,384;(240,0)→0,0 |
+| 1920×1080 | Y,切 1280×1024 | 1346×1078 置中,比例 1.25 | (960,540)→640,512 |
+
+真遊戲:登入正常(3/3);**進拍賣場未實測**。
+
+### 為什麼預設還是 1366×768:遊戲「全螢幕」時登入畫面會卡死
+**登入畫面固定 1366×768**,跟遊戲設定的解析度(`HKLM\Software\Wow6432Node\Wizet\MapleStory` 的
+`soResolutionWidth/Height`)無關,選角進遊戲後才換成設定值。`soScreenMode` 0 = 全螢幕、1 = 視窗。
+
+內部解析度 ≠ 1366×768 時,全螢幕的登入畫面一定要切到非原生模式。不管這個切換由誰做(wine 的 EmulateModeset 或
+Xwayland 的假模式),主執行緒切完就停在 poll 不再前進,另一條遊戲執行緒滿載空轉等它(`/proc/<pid>/task/*/stat`,
+跟「一定要經 gamescope」那節的連線中斷同一種),畫面全黑,約 45 秒後 `_ms_report.ini` 寫 `CONNECTION_FROM_LOGIN_CLOSED`。
+2026-10-03 主 prefix 循序實測(到登入表單 = 第一條 :443 後撐 15 秒):
+
+| 遊戲 | 內部解析度 | 其他 | 結果 |
+|---|---|---|---|
+| 全螢幕 | 1366×768 | EmulateModeset N / Y | 5/5、3/3 |
+| 全螢幕 | 1920×1080 | EmulateModeset Y | 1/12 |
+| 全螢幕 | 1920×1080 | EmulateModeset N | 0/4 |
+| 全螢幕 | 1920×1080 | DXVK 限 60fps | 0/4 |
+| 全螢幕 | 1920×1080 | 遊戲設定改 1920×1080(登入畫面照樣要 1368×768) | 0/2(其中一次跟 headless gamescope 測試重疊) |
+| 全螢幕 | 1920×1080 | xrandr 補一個真的 1366 寬的模式(遊戲改要 1366×768) | 0/1 |
+| **視窗** | 1920×1080 | EmulateModeset Y / N | **3/3、3/3** |
+
+- 1920×1080 的 Xwayland 沒有 1366×768(只有 1368×768;`cvt 1366` 也會取整成 1368)。
+- 三組多開並行測試會互相干擾(最後啟動的那組 1/6,舊設定也斷),量這種 race 要單開循序跑。
+
+**要 1920×1080**:遊戲改成視窗模式、遊戲裡選 1920×1080。`tools/gs-run.sh` 沒給 `GS_ARGS` 時讀 `soScreenMode`:
+視窗模式用 `-w 1920 -h 1080 -W <soResolutionWidth> -H <soResolutionHeight>`,全螢幕一律 1366×768,不會再組出「全螢幕 + 1920」。
+
+nested(`-w/-h`)跟 output(`-W/-H`)要分開給(2026-10-09):遊戲選單的上限是 nested,畫面是不是 1:1 看 output。
+原本只給 `-W/-H`(nested 跟著等於 output)= 拿遊戲上次選的解析度去限制這次能選的 —— 選過 1366 就只開 1366、選單裡沒有 1920,
+永遠選不回去。gamescope 的縮放是 `(nested ÷ 視窗) × (output ÷ nested) = output ÷ 視窗`(`steamcompmgr.cpp` `calc_scale_factor_scaler`),
+nested 約掉,所以 output = 遊戲解析度就是 1:1。遊戲裡換解析度的那一輪會縮放,重開就對。
+探針(`PROBE_MODES="w1366x768:8 r1024x768:8 w1366x768:6" tools/dev/modetest.sh Y -w 1920 -h 1080 -W 1366 -H 768`):
+1366 的 popup 沒被 gamescope 撐成 root 大小(client 一直 1366×768),拍賣場 1024×768 照比例置中。
+headless 截圖是 nested 大小(`gamescopectl` 傳不了截圖種類),output 那張截不到,1:1 靠上面的公式。
+
+### 視窗模式進拍賣場只畫在左上角 → patches/gamescope-0002 + 0003
+進拍賣場時遊戲把 1920×1080 的 `WS_POPUP`(style `94080000`)換成可調整大小的 1032×802 視窗(style `14ce0000`,
+client 1024×768)。wine(`+x11drv`)對已 map 的視窗,每送一個 `_NET_WM_STATE` / `_MOTIF_WM_HINTS` / configure 請求,
+都要等 WM 的回應(屬性寫回、ConfigureNotify)才送下一個(`... is updating ..., delaying request`)。gamescope 兩種回應都缺:
+
+1. **不寫回 `_NET_WM_STATE`**:只改自己的旗標。→ `gamescope-0002` 照 EWMH 寫回屬性。
+2. **不回 no-op 的 ConfigureRequest**:登入畫面是 1366×768 popup,進遊戲放大成 1920×1080 時 gamescope 早已把它撐滿 root,
+   wine 要 (0,0)-(1920,1080) 等於沒變,X server 不產生 ConfigureNotify,wine 永遠等著。→ `gamescope-0003` 照 ICCCM 4.1.5 補合成事件。
+
+只有 0002 時,一開始就是 1920 的探針會好,但真遊戲(先 1366 再 1920)照樣卡在 2,所以兩個都要。
+`GAMESCOPE_WSI_FORCE_BYPASS=1` 無效(不是 bypass 的問題)。
+
+實測:探針重現遊戲的完整順序(1366 popup → 1920 popup → `14ce0000` 1032×802 → 回 1920 popup,D3D9 視窗模式):
+修之前 X 視窗卡 1920×1080、畫面在左上角;修之後拍賣場 X 視窗 1024×768、gamescope 放成 1440×1080 置中,離開後回 1920×1080 滿版。
+全螢幕切模式探針結果不變。真遊戲登入 視窗 1920 3/3、全螢幕 1366 3/3。
+查遊戲視窗狀態用的是唯讀的 `GetWindowLong/GetWindowRect`(不送輸入);探針與查詢工具在 session scratch,沒進 repo。
 
 ## 鍵盤重複:修飾鍵在 X 下永遠不連發 → patch 0012 修(2026-09-27)
 症狀:綁在 Shift / Ctrl / Alt 的技能按住只放一次;改綁一般鍵(J)就會連發。Windows / VM 沒這問題。
@@ -224,6 +292,32 @@ keyrepeat-probe 驗證(獨立 prefix、gamescope 內、按住 2 秒):Shift / Ctr
 - 速率是 wine 的換算:KeyboardSpeed=31 → 每 12ms(Windows 實際約 33ms)。之前 J 在 `:2` 上是 X 的
   300/62(約 16ms),遊戲吃得下。要調就改 prefix 的 `HKCU\Control Panel\Keyboard`。
 - 一般鍵的速率從此由 wine 決定,**`xset r rate` 對遊戲不再有效**。
+
+## 間歇卡頓、畫面忽快忽慢:kernel 的 split lock 懲罰 → `kernel.split_lock_mitigate=0`(2026-10-23)
+症狀:同一個場景有時順有時卡,打王時特別明顯;MangoHud 看平均幀率不低,但 1% low 很差。
+
+**根因**:遊戲行程裡的反作弊模組(NGS,`NGClient64.aes` 載入的那段程式碼)每 ~30ms 在**遊戲主執行緒**
+做一次跨 cache line 的 lock 指令(split lock)。Windows 不管這個;Linux 在支援 split lock 偵測的 CPU 上
+(Intel 較新的 CPU,12 代桌機起都有)預設 `kernel.split_lock_mitigate=1`,每抓到一次就**故意讓該執行緒睡 10ms**
+(`arch/x86/kernel/cpu/bus_lock.c` `split_lock_warn()` 的 "misery factor")。
+
+實測(i7-14700F,kernel 7.0,站著不動的場景):主執行緒每 29ms 被睡 10-12ms 一次 = **33 次/秒,36% 的時間在睡**;
+DXVK 送幀變成「2ms 一張連發 6-8 張,然後停 16ms」。dmesg 只在每個行程第一次時印一行,看起來不嚴重,其實每次都在罰:
+
+    x86/split lock detection: #AC: MapleStory.exe/2074273 took a split_lock trap at address: 0x7ba3e139
+
+同樣間隔的 split lock 用 10 行 C 重現:每次 11-15ms。
+
+**修法**(需要 root,立刻生效,遊戲不必重開):
+```bash
+sudo sysctl kernel.split_lock_mitigate=0                                    # 這次開機
+echo 'kernel.split_lock_mitigate = 0' | sudo tee /etc/sysctl.d/99-split-lock.conf  # 永久
+```
+`=0` 只是不罰睡,偵測與 dmesg 警告照舊。SteamOS 等遊戲向發行版預設就關;Proton 上的遊戲遇到的是同一件事。
+`run.sh` 啟動時若看到 `=1` 會印警告。
+
+修好之後也重測過把整個 prefix 綁在 P-core(大小核 CPU 上的常見建議):三輪交錯各 60 秒,p99 6.8 → 6.5ms,
+感覺不出來,所以 `run.sh` 不綁(P-core 少的筆電綁了反而可能更慢)。想綁自己 `taskset -c <P-core> maple`。
 
 ## 取得帳號 sid 與 OTP
 遊戲登入表單的「帳號」要填 beanfun 的遊戲帳號 **sid**(`T9…` 那串),不是帳號名稱。
