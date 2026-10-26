@@ -102,7 +102,7 @@ GAME_WIN=""
 declare -A seen
 for ((t = 0; t < WAIT_TIMEOUT; t++)); do
     NETFAIL_WIN=""
-    while read -r id _ pid x y w h _; do
+    while read -r id _ pid _ _ w h _; do
         [ "$(comm_of "$pid")" = "$PROC_NAME" ] || continue
         # 看到的每個遊戲視窗都印一次(含尺寸)。尺寸對不上時要看得見,不能靜默空等。
         [ -n "${seen[$id-$w-$h]:-}" ] || { echo "   t=${t}s 看到 $id ${w}x${h}"; seen[$id-$w-$h]=1; }
@@ -121,7 +121,7 @@ for ((t = 0; t < WAIT_TIMEOUT; t++)); do
 done
 if [ -z "$GAME_WIN" ]; then
     echo "❌ ${WAIT_TIMEOUT}s 內沒等到登入畫面。當下的視窗清單(id/pid/大小/comm):"
-    while read -r id _ pid x y w h _; do
+    while read -r id _ pid _ _ w h _; do
         echo "   $id pid=$pid ${w}x${h} comm=$(comm_of "$pid")"
     done < <(wmctrl -lGp)
     echo "   遊戲 log:$GAMELOG"

@@ -36,6 +36,7 @@ lock() {
 envs() { ls -d "$MAIN_ENV" "$CFG"/env-[2-9].sh 2>/dev/null || true; }
 
 # 在乾淨環境裡 source 一份 env,印出某個變數
+# shellcheck disable=SC2016  # 單引號是故意的:$1/$2 要由內層 bash -c 展開
 envvar() { env -u WINE_ROOT -u WINEPREFIX -u GAME_DIR bash -c 'source "$1" >/dev/null && printf %s "${!2:-}"' _ "$1" "$2"; }
 
 # 有行程在用 runners/ 裡的 wine,或任何一組的 wineserver 還活著
@@ -128,6 +129,7 @@ refresh_prefixes() {
     local f
     for f in $(envs); do
         echo "== setup-prefix($f)"
+        # shellcheck disable=SC2016  # 單引號是故意的:$1/$2 要由內層 bash -c 展開
         env -u WINE_ROOT -u WINEPREFIX -u GAME_DIR bash -c 'source "$1" && exec "$2"' _ "$f" "$REPO/prefix/setup-prefix.sh" 9>&-
     done
 }
