@@ -22,6 +22,14 @@ mkdir -p "$(dirname "$MAPLE_LOG")"
 echo "log:$MAPLE_LOG"
 exec > >(tee -a "$MAPLE_LOG") 2>&1
 
+# setup-prefix 沒跑完的 prefix 裡,system32/dxgi.dll 是 wine 自己的(或根本沒有);上面強制 dxgi=n,
+# 遊戲只會留一行 "dxgi.dll ... not found" 就退出。maple 開遊戲前也查同一件事,這裡顧直接跑 gs-run.sh / Lutris 的人
+dxgi=$WINEPREFIX/drive_c/windows/system32/dxgi.dll
+if [ ! -f "$dxgi" ] || head -c 128 "$dxgi" | grep -qa 'Wine builtin DLL'; then
+    echo "prefix 沒建完($WINEPREFIX 裡沒有 DXVK):maple setup,或 source env.sh 後跑 prefix/setup-prefix.sh" >&2
+    exit 1
+fi
+
 # gamescope 的巢狀 Xwayland 上沒有 XIM server(fcitx5 只註冊在 KWin 的那個 display),中文輸入法會完全沒反應。
 # 請 fcitx5 多接這個 display;wine 只在視窗拿到焦點時建 XIC,所以必須在 wine 啟動前做。不走 gamescope 時已有 server,自動跳過。
 if ! xprop -root XIM_SERVERS 2>/dev/null | grep -q '@server='; then

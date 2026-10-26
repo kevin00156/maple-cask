@@ -8,12 +8,14 @@
 #   maple qr         強制重掃 QR(= maple-login login --qr)
 #   maple session    session 還活著嗎(= maple-login status)
 #   maple update     更新腳本 + runner 到最新 Release(--rollback 退 runner;不分組別,一次全部)
+#   maple setup      重跑 prefix/setup-prefix.sh(prefix 沒建完、或 update 時 setup 失敗,修好原因後用這個補)
 #   其他一律原樣轉給 maple-login:maple otp / forget / keepalive / --name … 都照舊能用
 #
 # 開遊戲時一天查一次有沒有新版,有就印一行,不擋。
 #
 # 多開:前面加 -2 ~ -9 就是第 N 組,其餘用法完全一樣
-#   maple -2 setup   建第 2 組(一次就好):遊戲目錄 Data/ hardlink、其餘複製(約 600MB),寫 env-2.sh,建 prefix
+#   maple -2 setup   建第 2 組(一次就好):遊戲目錄 Data/ hardlink、其餘複製(約 600MB),寫 env-2.sh,建 prefix;
+#                    已經建過就只重跑 setup-prefix.sh(同 maple setup)
 #   maple -2         開第 2 組並登入;maple -2 stop / status / login …
 #   每組各記各的「上次選的帳號」。
 # 設定檔:$MAPLE_ENV(預設 ~/.config/maplestory-tw/env.sh,從 env.example 複製;第 N 組是 env-N.sh),不用 source。
@@ -27,7 +29,6 @@ if [ "${1:-}" = update ]; then shift; exec "$HERE/maple-update" "$@"; fi
 # 建第 N 組:從主設定的遊戲目錄分出一份,prefix 全新
 setup_instance() {
     local n=$1 envf=$CFG/env-$1.sh data
-    [ -e "$envf" ] && { echo "第 $n 組已經有了($envf);要重建先刪它" >&2; return 1; }
     source "$CFG/env.sh"
     data=${MAPLE_DATA:-${XDG_DATA_HOME:-$HOME/.local/share}/maplestory-tw}/instances/$n
     [ -f "$GAME_DIR/MapleStory.exe" ] || { echo "主設定的 GAME_DIR 裡沒有 MapleStory.exe:$GAME_DIR" >&2; return 1; }
@@ -55,7 +56,7 @@ setup_instance() {
 if [[ ${1:-} =~ ^-([2-9])$ ]]; then
     export MAPLE_INSTANCE=${BASH_REMATCH[1]}
     shift
-    if [ "${1:-}" = setup ]; then setup_instance "$MAPLE_INSTANCE"; exit; fi
+    if [ "${1:-}" = setup ] && [ ! -e "$CFG/env-$MAPLE_INSTANCE.sh" ]; then setup_instance "$MAPLE_INSTANCE"; exit; fi
     export MAPLE_ENV=$CFG/env-$MAPLE_INSTANCE.sh
     [ -f "$MAPLE_ENV" ] || { echo "第 $MAPLE_INSTANCE 組還沒建:maple -$MAPLE_INSTANCE setup" >&2; exit 1; }
     unset WINE_ROOT WINEPREFIX GAME_DIR          # 一定重載,不吃外面 source 過的主設定
@@ -77,8 +78,18 @@ ours() {
 game_running() { ours -f 'MapleStory\.exe'; }
 ws_running()   { ours -x wineserver; }
 
+# setup-prefix 沒跑完(中途失敗、或 maple update 之前就先開過遊戲,wine 自己建了空 prefix)時,
+# system32/dxgi.dll 是 wine 自己的;run.sh 強制 dxgi=n,遊戲一定起不來 —— 現在講,不要等登入表單 240 秒
+prefix_ok() {
+    local f=$WINEPREFIX/drive_c/windows/system32/dxgi.dll
+    [ -f "$f" ] && ! head -c 128 "$f" | grep -qa 'Wine builtin DLL' && return 0
+    echo "prefix 沒建完($WINEPREFIX 裡沒有 DXVK):maple${MAPLE_INSTANCE:+ -$MAPLE_INSTANCE} setup" >&2
+    return 1
+}
+
 cmd_game() {
     if game_running; then echo "遊戲已經在跑,不重開"; return 0; fi
+    prefix_ok
     if ws_running; then
         echo "wineserver 還活著但沒遊戲 → 先殺,不然 explorer 的 desktop 留在錯的 display"
         "$HERE/kill-prefix.sh"
@@ -96,6 +107,11 @@ wait_login() { "$HERE/maple-login" --wait-game 240 "$@"; }
 cmd_login() {
     game_running || { echo "遊戲沒在跑;先 maple game" >&2; return 1; }
     wait_login "$@"
+}
+
+cmd_setup() {
+    game_running && { echo "遊戲還在跑,先 maple${MAPLE_INSTANCE:+ -$MAPLE_INSTANCE} stop" >&2; return 1; }
+    "$HERE/../prefix/setup-prefix.sh"
 }
 
 cmd_stop() {
@@ -116,6 +132,7 @@ case "${1:-}" in
     game)    shift; cmd_game "$@" ;;
     login)   shift; cmd_login "$@" ;;
     stop)    cmd_stop ;;
+    setup)   cmd_setup ;;
     status)  cmd_status ;;
     qr)      shift; exec "$HERE/maple-login" login --qr "$@" ;;
     session) shift; exec "$HERE/maple-login" status "$@" ;;

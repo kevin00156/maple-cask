@@ -124,11 +124,14 @@ prune() {
     done
 }
 
+# setup 中途失敗的話,之後再 update 也不會重跑它(腳本與 runner 都已是最新)→ 要講清楚怎麼補
 refresh_prefixes() {
-    local f
+    local f n
     for f in $(envs); do
         echo "== setup-prefix($f)"
-        env -u WINE_ROOT -u WINEPREFIX -u GAME_DIR bash -c 'source "$1" && exec "$2"' _ "$f" "$REPO/prefix/setup-prefix.sh" 9>&-
+        n=$(sed -n 's/^env-\([2-9]\)\.sh$/ -\1/p' <<<"${f##*/}")
+        env -u WINE_ROOT -u WINEPREFIX -u GAME_DIR bash -c 'source "$1" && exec "$2"' _ "$f" "$REPO/prefix/setup-prefix.sh" 9>&- ||
+            die "setup-prefix 沒跑完,遊戲開不起來;修好上面的錯誤後重跑:maple$n setup"
     done
 }
 

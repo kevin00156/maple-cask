@@ -23,6 +23,11 @@ maple-cask(楓木桶)—— 讓台版新楓之谷在 Linux 上跑起來。名字
   sudo apt install gamescope winetricks mingw-w64 python3-requests python3-cryptography
   sudo locale-gen zh_TW.UTF-8
   ```
+  Arch / CachyOS 等 Arch 系的 `locale-gen` 不吃參數(照上面打會「成功」但什麼都沒生),要先在 `/etc/locale.gen` 打開那一行:
+  ```bash
+  sudo sed -i 's/^#zh_TW.UTF-8 UTF-8/zh_TW.UTF-8 UTF-8/' /etc/locale.gen && sudo locale-gen
+  locale -a | grep -i zh_TW     # 有 zh_TW.utf8 才算數
+  ```
 - 一份現成的 MapleStory 目錄(含 `MapleStory.exe`、`Patcher.exe`)—— 本專案不處理遊戲下載 / 安裝
 - 一支 beanfun 手機 App（QR 登入與 passkey 註冊時的備用驗證）
 - 選用 passkey 自動重登：Chromium 系瀏覽器、`secret-tool` 與 `gdbus`（Ubuntu：`sudo apt install libsecret-tools libglib2.0-bin`）與已解鎖的 Secret Service/KWallet。`Xvfb` 選用（`sudo apt install xvfb`）；沒有就開可見視窗。不需要 `websocket-client`，缺少 passkey 依賴仍可 QR。
@@ -65,6 +70,8 @@ maple stop                # 關遊戲
 maple help                # 全部指令
 ```
 - 請一律用 `maple`(經 gamescope)開遊戲,不要直接跑 wine —— 不經 gamescope 常常連不上登入伺服器。
+- `maple` 說「prefix 沒建完」(或 log 裡有 `dxgi.dll ... not found`):`maple update` 的 setup 中途失敗過,
+  或在 `maple update` 之前就先開過遊戲(wine 自己建了沒有 DXVK 的空 prefix)。修好原因後跑 `maple setup`,不用自己去抓 DXVK。
 - 多開:`maple -2 setup` 一次,之後 `maple -2`(`-2`~`-9`)。
 - 解析度:遊戲是**視窗模式**時,gamescope 自動用遊戲裡設定的解析度(要 1920x1080 就在遊戲裡選);遊戲是全螢幕時固定 1366x768
   (登入畫面固定 1366x768,換別的會在登入前斷線,見 `docs/known-issues.md`「拍賣場被拉伸」)。要自己指定:`GS_ARGS="-W 1366 -H 768 -f" maple game`。
