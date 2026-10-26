@@ -28,8 +28,8 @@ if [ "${1:-}" = update ]; then shift; exec "$HERE/maple-update" "$@"; fi
 
 # 建第 N 組:從主設定的遊戲目錄分出一份,prefix 全新
 setup_instance() {
-    local n=$1 envf=$CFG/env-$1.sh data
-    source "$CFG/env.sh"
+    local n=$1 envf=$CFG/env-$1.sh main=${MAPLE_ENV:-$CFG/env.sh} data
+    source "$main"
     data=${MAPLE_DATA:-${XDG_DATA_HOME:-$HOME/.local/share}/maplestory-tw}/instances/$n
     [ -f "$GAME_DIR/MapleStory.exe" ] || { echo "主設定的 GAME_DIR 裡沒有 MapleStory.exe:$GAME_DIR" >&2; return 1; }
     [ -e "$data/game" ] && { echo "$data/game 已經存在;要重建先刪它" >&2; return 1; }
@@ -43,7 +43,7 @@ setup_instance() {
     done)
     {
         echo "# maple -$n 的設定:沿用主設定(wine、字型、gamescope…),只換 prefix 與遊戲目錄。$(date +%F) 由 maple -$n setup 產生"
-        echo "source \"$CFG/env.sh\""
+        echo "source \"$main\""
         echo "export WINEPREFIX=\"$data/prefix\""
         echo "export GAME_DIR=\"$data/game\""
     } > "$envf"

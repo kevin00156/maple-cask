@@ -137,9 +137,11 @@ def browser_executable():
         if alias:
             names.remove(alias)
             names.insert(1, alias)
+    # snap 的瀏覽器在沙盒裡讀不到 $XDG_RUNTIME_DIR 底下的 profile(同 maple-login 的 open_image)
     for n in names:
-        if shutil.which(n):
-            return shutil.which(n)
+        exe = shutil.which(n)
+        if exe and not exe.startswith('/snap/'):
+            return exe
     raise PasskeyUnavailable('沒有可用的 Chromium 瀏覽器')
 
 

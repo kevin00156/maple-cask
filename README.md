@@ -46,13 +46,14 @@ git clone https://github.com/kevin00156/maple-cask.git && cd maple-cask
 
 # 1. 設路徑:填 GAME_DIR(必填)、FONTS_DIR;WINE_ROOT 保持預設 = 交給 maple update 管
 mkdir -p ~/.config/maplestory-tw
-cp env.example ~/.config/maplestory-tw/env.sh && $EDITOR ~/.config/maplestory-tw/env.sh
+cp env.example ~/.config/maplestory-tw/env.sh && ${EDITOR:-nano} ~/.config/maplestory-tw/env.sh
 
 # 2. 下載 wine runner(Releases 最新版,校驗 SHA256)並建 prefix
 tools/maple update
 
-# 3. 把 maple 放進 PATH(~/.local/bin 是這步才建的話,要重新登入 PATH 才會有它)
+# 3. 把 maple 放進 PATH
 mkdir -p ~/.local/bin && ln -sf "$PWD/tools/maple" ~/.local/bin/maple
+command -v maple || echo '~/.local/bin 不在 PATH:bash 在 ~/.bashrc 加 export PATH="$HOME/.local/bin:$PATH";fish 跑 fish_add_path ~/.local/bin'
 
 # 4. 關掉 kernel 對 split lock 的罰睡 —— 不關的話反作弊會讓遊戲主執行緒每秒被睡 30 多次、每次 10ms(間歇卡頓)
 echo 'kernel.split_lock_mitigate = 0' | sudo tee /etc/sysctl.d/99-split-lock.conf && sudo sysctl --system
