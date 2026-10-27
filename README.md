@@ -2,12 +2,7 @@
 
 # MapleCask
 
-maple-cask(楓木桶)—— 讓台版新楓之谷在 Linux 上跑起來。名字取自楓木桶熟成的加拿大威士忌:甜,但是烈。
-
-一個上游 wine 加一組小 patch 的 wine runner、一支把 prefix 建對的腳本,和一個幫你拿 beanfun OTP、
-填進登入表單的指令。
-
-**狀態**:✅ 可以玩。登入、長時間遊玩、遊戲內打中文、修飾鍵技能按住連發都實測過。
+maple-cask(楓木桶)—— 台版新楓之谷 in Linux。
 
 ## 關於反作弊與帳號
 - 本專案**沒有停用、沒有繞過** BlackCipher / NGS,它們全程照常運作。唯一相關的 patch 做的事,
