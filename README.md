@@ -28,7 +28,8 @@ maple-cask(楓木桶)—— 讓台版新楓之谷在 Linux 上跑起來。名字
   sudo sed -i 's/^#zh_TW.UTF-8 UTF-8/zh_TW.UTF-8 UTF-8/' /etc/locale.gen && sudo locale-gen
   locale -a | grep -i zh_TW     # 有 zh_TW.utf8 才算數
   ```
-- 一份現成的 MapleStory 目錄(含 `MapleStory.exe`、`Patcher.exe`)—— 本專案不處理遊戲下載 / 安裝
+- 遊戲本體(約 70GB):已經有現成的目錄就把 `GAME_DIR` 指過去;沒有的話裝好後 `maple install` 會用
+  [cmsdl](https://github.com/HikariCalyx/cmsdl) 從橘子的 CDN 下載(中斷了重跑會接著下)
 - 一支 beanfun 手機 App（QR 登入與 passkey 註冊時的備用驗證）
 - 選用 passkey 自動重登：Chromium 系瀏覽器、`secret-tool` 與 `gdbus`（Ubuntu：`sudo apt install libsecret-tools libglib2.0-bin`）與已解鎖的 Secret Service/KWallet。`Xvfb` 選用（`sudo apt install xvfb`）；沒有就開可見視窗。不需要 `websocket-client`，缺少 passkey 依賴仍可 QR。
   ```bash
@@ -44,7 +45,8 @@ maple-cask(楓木桶)—— 讓台版新楓之谷在 Linux 上跑起來。名字
 ```bash
 git clone https://github.com/kevin00156/maple-cask.git && cd maple-cask
 
-# 1. 設路徑:填 GAME_DIR(必填)、FONTS_DIR;WINE_ROOT 保持預設 = 交給 maple update 管
+# 1. 設路徑:填 GAME_DIR(必填;還沒有遊戲就填想放的位置,第 3 步後 maple install)、FONTS_DIR;
+#    WINE_ROOT 保持預設 = 交給 maple update 管
 mkdir -p ~/.config/maplestory-tw
 cp env.example ~/.config/maplestory-tw/env.sh && ${EDITOR:-nano} ~/.config/maplestory-tw/env.sh
 
@@ -73,7 +75,9 @@ maple help                # 全部指令
 - 請一律用 `maple`(經 gamescope)開遊戲,不要直接跑 wine —— 不經 gamescope 常常連不上登入伺服器。
 - `maple` 說「prefix 沒建完」(或 log 裡有 `dxgi.dll ... not found`):`maple update` 的 setup 中途失敗過,
   或在 `maple update` 之前就先開過遊戲(wine 自己建了沒有 DXVK 的空 prefix)。修好原因後跑 `maple setup`,不用自己去抓 DXVK。
-- 多開:`maple -2 setup` 一次,之後 `maple -2`(`-2`~`-9`)。
+- 遊戲更新:`maple` 開遊戲前會查,有新版就先用 cmsdl 更新再開(比遊戲自己的 Patcher.exe 快很多)。
+  有任何一組還在跑、或查不到時就照開,由 Patcher.exe 接手。
+- 多開:`maple -2 setup` 一次,之後 `maple -2`(`-2`~`-9`)。主目錄更新過,`maple -N` 會自動重建那組的遊戲目錄。
 - 解析度:遊戲是**視窗模式**時,gamescope 自動用遊戲裡設定的解析度(要 1920x1080 就在遊戲裡選);遊戲是全螢幕時固定 1366x768
   (登入畫面固定 1366x768,換別的會在登入前斷線,見 `docs/known-issues.md`「拍賣場被拉伸」)。要自己指定:`GS_ARGS="-W 1366 -H 768 -f" maple game`。
 - 用 Lutris / Heroic:執行檔設成 `tools/gs-run.sh`(不是 wine 本身),環境變數照 `env.sh` 填。
@@ -118,3 +122,5 @@ LGPL-2.1-or-later(與 wine 相同)。patch 是對 wine 的修改,本來就必須
   [pungin/Beanfun](https://github.com/pungin/Beanfun) —— 感謝原作者把 beanfun 的登入 / OTP
   流程摸清楚。本專案是照其協定行為重寫,未複製原始碼。該專案本身未附授權條款,
   若原作者對此處的引用方式有任何意見,歡迎開 issue。
+- 遊戲下載與更新用 [HikariCalyx/cmsdl](https://github.com/HikariCalyx/cmsdl)(MIT)的 release 執行檔,
+  版本與 sha256 釘在 `build/CMSDL_VERSION`、`build/CMSDL_SHA256`。感謝作者與做逆向工程的 @Deneo。

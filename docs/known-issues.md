@@ -27,8 +27,12 @@ maple -2            # 開第 2 組並登入;maple -2 stop / status / login … �
 自動登入只會填進自己那組(`mapletype.exe` 只連得到那組的 wineserver);「上次選的帳號」每組各記各的(`prefs-N.json`)。
 wine 本身可以共用。
 
-⚠ `Patcher.exe` 更新遊戲後,第 N 組的遊戲目錄要重建(刪掉 `instances/N/game` 與 `env-N.sh` 再 `maple -N setup`),
-不然兩組版本可能不一致。
+主目錄更新後(不論是 cmsdl 還是 `Patcher.exe` 更新的),`maple -N` 開遊戲前會發現第 N 組跟主目錄不一致
+(`MapleStory.exe` 內容不同,或 `Data/Base/Base.wz` 不是同一個 inode),自動重建那組的遊戲目錄:
+截圖搬過去、log 丟掉、prefix 不動(遊戲設定在 prefix 的登錄檔裡)。
+
+⚠ 不要在第 N 組裡讓 `Patcher.exe` 更新:它改的 `Data/` 是跟主目錄共用的 hardlink。
+主目錄先更新好(`maple` 開第 1 組),第 N 組自然跟上。
 
 2026-09-27 實測:第 1、2 組同時開,都停在登入畫面;`maple -2 stop` 只關第 2 組。
 
@@ -43,10 +47,21 @@ wine 本身可以共用。
 經過 Proton 的 `proton` 啟動腳本遊戲會秒死(`invalid frame (0x12000-0x12000)`),根因未查。
 目前只提供 Lutris / Heroic 式的 wine runner(直接執行 `bin/wine`)。
 
-## 遊戲檔取得不在範圍內
-你需要一份**現成的** MapleStory 目錄(約 70GB)。橘子官方安裝程式在 wine 下**沒測過**;
-目前已知可行的是從 Windows 安裝後把整個目錄複製過來。之後 `Patcher.exe` 在 wine 下能正常自我更新
-(它會下載新的 `MapleStory.exe` 蓋掉舊的)。
+## 遊戲下載與更新(cmsdl)
+`maple install` 用 [cmsdl](https://github.com/HikariCalyx/cmsdl) 把整份遊戲(約 70GB)下載到 `GAME_DIR`;
+只接受不存在、空的、或上次沒下完(有 `.incomplete_tms` / `Data/.incomplete`)的目錄。
+從 Windows 複製過來的目錄也照樣能用。橘子官方安裝程式在 wine 下**沒測過**。
+
+`maple` 開遊戲前會查版本(cmsdl `--upgrade-path-check`,只抓 273 bytes 的 `Base.wz`)與
+`MapleStory.exe` 熱修補(CDN 上 `ExePatch.dat` 的大小 vs 本機),有一項對不上才跑 `cmsdl --patch latest`。
+不直接每次跑 `--patch latest`:版本已是最新時它仍會重下 177MB 的 `ExePatch.dat`(cmsdl v0.2.9)。
+
+不做「修復」:cmsdl 修復壞檔是原地改寫,會連多開組共用的 hardlink 一起改。同理,任何一組在跑時不更新主目錄。
+cmsdl 查不到、更新失敗時照開遊戲,遊戲版本舊了會自己叫 `Patcher.exe`(慢,但能用)。
+
+2026-10-27/28 實測(cmsdl v0.2.9):`maple install` 從零下載 69G 約 3 小時 → 全新 prefix → 登入到選伺服器畫面;
+開遊戲前偵測到新的 `ExePatch.dat` 並自動套用;V283 主目錄判斷為最新;第 2 組自動重建成功。
+**還沒實測**:大版本更新的 patch 鏈(例如 V283 → V284)—— 下次改版時驗。
 
 ## 登入流程的兩個時間限制
 - **空的登入表單閒置約 2 分鐘會自己關**。建議的順序是**先開遊戲、等表單出現,再跑 `tools/maple-login`** ——

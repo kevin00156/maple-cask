@@ -56,6 +56,7 @@ repo 只放腳本、patch、文件;大檔預設在 `~/.local/share/maplestory-tw
 ~/.local/share/maplestory-tw/build/       build/build-wine.sh 的 build 目錄(out/ = wine runner)
 ~/.local/share/maplestory-tw/gamescope/   build/build-gamescope.sh 的安裝目錄
 ~/.local/share/maplestory-tw/instances/   多開的第 2~9 組(maple -N setup)
+~/.local/share/maplestory-tw/cmsdl/       maple update 下載的 cmsdl(版本見 build/CMSDL_VERSION),下載 / 更新遊戲用
 ~/.config/maplestory-tw/env.sh            WINE_ROOT / WINEPREFIX / GAME_DIR / FONTS_DIR(從 env.example 複製)
 ~/.cache/maplestory-tw/                   每次開遊戲的 log
 $XDG_RUNTIME_DIR/maplestory-tw/           beanfun session(tmpfs,重開機就消失 —— 刻意的)

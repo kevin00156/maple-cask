@@ -3,12 +3,14 @@
 #   maple update             更新(遊戲要先關;多開的每一組一起)
 #   maple update --check     只查、有新版印一行;一天真的查一次(maple 開遊戲時自動跑)
 #   maple update --rollback  runner 退回上一版(腳本不動)
+#   maple update --busy      任何一組的遊戲 / wineserver 在跑就 exit 0(給 maple-game 用)
 #
 # 什麼會被更新,各自一條規則,不看你是誰:
 #   腳本   = 這個 git clone 的 HEAD 在最新 tag 的歷史上、追蹤中的檔案沒被改 → git merge --ff-only
 #   runner = env.sh 的 WINE_ROOT 指向 $MAPLE_DATA/runners/current → 下載、校驗、解開、換 symlink
 #   不符合的那項就跳過並說原因;自己 build / 自己放 runner 的人不會被動到。
 # 有任何東西換了,每一組都重跑 prefix/setup-prefix.sh:它會把 runner 裡的 DXVK 複製進 prefix,不重跑就還是舊的。
+# 最後確保 build/CMSDL_VERSION 那版 cmsdl 在(更新遊戲用;腳本更新後版本可能換了)。
 set -euo pipefail
 HERE=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 REPO=$(dirname "$HERE")
@@ -200,9 +202,10 @@ rollback() {
 # 整支包在函式裡、最後一行才執行:git merge 會在執行中途換掉這個檔案,bash 得先讀完整份
 main() {
     case "${1:-}" in
-        "")         update ;;
+        "")         update; "$HERE/maple-game" fetch || echo "cmsdl 沒裝成,開遊戲時就不會自動更新遊戲;重跑 maple update 會再試" ;;
         --check)    check ;;
         --rollback) rollback ;;
+        --busy)     busy ;;
         *)          awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "$0"; exit 2 ;;
     esac
 }
