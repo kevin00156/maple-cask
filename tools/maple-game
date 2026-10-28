@@ -1,0 +1,140 @@
+#!/bin/bash
+# maple-game — 遊戲檔案:下載、更新、多開組跟上主目錄。經 maple 呼叫,不用自己跑。
+#   maple-game fetch     取得 build/CMSDL_VERSION 那版 cmsdl(sha256 對 build/CMSDL_SHA256)。maple update 會跑
+#   maple-game install   下載整份遊戲(約 70GB)到主設定的 GAME_DIR;只接受不存在 / 空的 / 上次沒下完的目錄
+#   maple-game sync      開遊戲前:主目錄有新版就更新;MAPLE_INSTANCE=N 時再把第 N 組對齊主目錄
+#   maple-game clone D   從主目錄分出一份遊戲目錄到 D(Data/ hardlink,其餘複製)。maple -N setup 用
+#
+# 更新用 cmsdl(https://github.com/HikariCalyx/cmsdl),不再靠遊戲自己叫 Patcher.exe(慢)。
+# 任何一步失敗都只印警告、照開遊戲:遊戲版本舊了會自己叫 Patcher.exe,那就是後備。
+#
+# 為什麼不是每次都 `cmsdl --patch latest`:版本已是最新時它仍會無條件重下 177MB 的 ExePatch.dat。
+# 所以先自己看兩件事,有一件對不上才叫它:
+#   版本  = cmsdl --upgrade-path-check(只下載 273 bytes 的 Base.wz)
+#   熱修補 = CDN 上 ExePatch.dat 的大小 vs 本機 MapleStory.exe(cmsdl 自己判斷 exe 也是比大小)
+#
+# 多開組的 Data/ 是主目錄的 hardlink。cmsdl 一般是寫新檔再換上(hardlink 斷開、多開組留舊檔),
+# 但修復壞檔與整份下載是原地改寫 —— 所以任何一組在跑就不動主目錄。
+set -euo pipefail
+HERE=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
+REPO=$(dirname "$HERE")
+CFG=${XDG_CONFIG_HOME:-$HOME/.config}/maplestory-tw
+MAIN_ENV=${MAPLE_ENV_MAIN:-${MAPLE_ENV:-$CFG/env.sh}}     # maple -N 會把主設定放在 MAPLE_ENV_MAIN
+DATA=${MAPLE_DATA:-${XDG_DATA_HOME:-$HOME/.local/share}/maplestory-tw}
+CACHE=${XDG_CACHE_HOME:-$HOME/.cache}/maplestory-tw
+CMSDL_VERSION=$(<"$REPO/build/CMSDL_VERSION")
+CMSDL=$DATA/cmsdl/$CMSDL_VERSION/cmsdl
+EXE_PATCH_URL=http://tw.cdnpatch.maplestory.beanfun.com/maplestory/patch/patchdir
+
+die()  { echo "$*" >&2; exit 1; }
+warn() { echo "⚠ $*" >&2; }
+
+# 主設定的 GAME_DIR(多開時環境裡的 GAME_DIR 是那一組的,不能用)
+# shellcheck disable=SC2016  # 單引號是故意的:$1 / $GAME_DIR 要由內層 bash -c 展開
+main_game_dir() { env -u GAME_DIR bash -c 'source "$1" >/dev/null && printf %s "$GAME_DIR"' _ "$MAIN_ENV"; }
+
+# 任何一組的遊戲或 wineserver 在跑(maple-update 的判斷,要給它主設定)
+busy() { MAPLE_ENV=$MAIN_ENV "$HERE/maple-update" --busy; }
+
+fetch() {
+    local sha url tmp
+    sha=$(<"$REPO/build/CMSDL_SHA256")
+    [ -x "$CMSDL" ] && sha256sum -c --quiet - <<<"$sha  $CMSDL" 2>/dev/null && return 0
+    url=https://github.com/HikariCalyx/cmsdl/releases/download/$CMSDL_VERSION/cmsdl_x86-64-linux
+    echo "== 下載 cmsdl $CMSDL_VERSION"
+    mkdir -p "${CMSDL%/*}"
+    tmp=$CMSDL.part
+    curl -fL --progress-bar --retry 5 --retry-all-errors -o "$tmp" "$url" || { rm -f "$tmp"; die "cmsdl 下載失敗"; }
+    sha256sum -c --quiet - <<<"$sha  $tmp" || { rm -f "$tmp"; die "cmsdl 校驗不符,丟掉了"; }
+    chmod +x "$tmp" && mv "$tmp" "$CMSDL"
+    # 舊版本的 cmsdl 不留
+    find "$DATA/cmsdl" -mindepth 1 -maxdepth 1 ! -name "$CMSDL_VERSION" -exec rm -rf {} +
+}
+
+# 上次 cmsdl 整份下載 / 修復沒完成。這時 --patch 會自己改走整份下載(70GB),不能在開遊戲時默默觸發
+unfinished() { [ -e "$1/.incomplete_tms" ] || [ -e "$1/Data/.incomplete" ]; }
+
+install() {
+    local dir
+    dir=$(main_game_dir)
+    [ -n "$dir" ] || die "主設定($MAIN_ENV)沒有 GAME_DIR"
+    if [ -d "$dir" ] && [ -n "$(ls -A "$dir")" ] && ! unfinished "$dir"; then
+        die "$dir 不是空的,也不是上次沒下完的目錄;已經有遊戲就不用 install(不做修復:會原地改寫多開組共用的檔案)"
+    fi
+    busy && die "遊戲或 wineserver 還在跑,先 maple stop(多開的每一組都要)"
+    fetch
+    echo "== 下載整份遊戲到 $dir(約 70GB;中斷了重跑 maple install 會接著下)"
+    "$CMSDL" tms --download "$dir" --no-gui
+    echo "完成。開:maple"
+}
+
+# 主目錄落後就印原因,跟上了就什麼都不印。查不到也算跟上(交給 Patcher.exe)
+behind() {
+    local dir=$1 out cur tgt len
+    out=$(timeout 60 "$CMSDL" tms --upgrade-path-check latest "$dir" 2>/dev/null) || true
+    cur=$(sed -n 's/^current version: *\([0-9]*\)$/\1/p' <<<"$out")
+    tgt=$(sed -n 's/^target version: *\([0-9]*\)$/\1/p' <<<"$out")
+    if [ -z "$cur" ] || [ -z "$tgt" ]; then warn "查不到遊戲最新版本,這次不更新"; return 0; fi
+    [ "$cur" -lt "$tgt" ] && { echo "V$cur → V$tgt"; return 0; }
+    len=$(curl -fsI --max-time 10 "$EXE_PATCH_URL/$(printf %05d "$cur")/ExePatch.dat" 2>/dev/null |
+          tr -d '\r' | sed -n 's/^[Cc]ontent-[Ll]ength: *//p')
+    [ -n "$len" ] && [ "$len" != "$(stat -c %s "$dir/MapleStory.exe")" ] && echo "V$cur 的 MapleStory.exe 熱修補"
+    return 0
+}
+
+update_main() {
+    local dir why
+    dir=$(main_game_dir)
+    [ -f "$dir/MapleStory.exe" ] || return 0          # 還沒裝:maple 會講怎麼辦
+    [ -x "$CMSDL" ] || { warn "沒有 cmsdl,這次不檢查遊戲更新(maple update 會裝)"; return 0; }
+    if unfinished "$dir"; then warn "$dir 上次的下載 / 修復沒完成,不自動更新;跑 maple install 接著下"; return 0; fi
+    why=$(behind "$dir")
+    [ -n "$why" ] || return 0
+    if busy; then warn "遊戲有新版($why),但有一組還在跑,這次不更新"; return 0; fi
+    echo "== 遊戲更新:$why"
+    "$CMSDL" tms --patch latest "$dir" --no-gui || warn "cmsdl 更新失敗,照開(遊戲會自己叫 Patcher.exe)"
+}
+
+clone() {
+    local dst=$1 main
+    main=$(main_game_dir)
+    [ -f "$main/MapleStory.exe" ] || die "主設定的 GAME_DIR 裡沒有 MapleStory.exe:$main"
+    mkdir -p "$dst"
+    # Data/(68GB)執行時不會被寫 → hardlink 不佔空間;其餘(BlackCipher 的 log 等)會被寫,真的複製。
+    # 截圖不帶;patchdata/ 是 cmsdl 的暫存
+    cp -al "$main/Data" "$dst/" || {
+        echo "hardlink 失敗(遊戲目錄跟 $dst 不在同一個檔案系統?)。把 MAPLE_DATA 設到同一顆碟上再試" >&2; return 1; }
+    (cd "$main" && for e in *; do
+        case $e in Data|patchdata|Maple_*.jpg) ;; *) cp -a "$e" "$dst/" ;; esac
+    done)
+}
+
+# 第 N 組跟主目錄不一致(主目錄更新過)→ 重建這組的遊戲目錄,截圖搬過去。prefix 不動
+sync_instance() {
+    local game=$GAME_DIR main
+    main=$(main_game_dir)
+    [ -f "$main/MapleStory.exe" ] && [ -d "$game" ] || return 0
+    cmp -s "$main/MapleStory.exe" "$game/MapleStory.exe" && [ "$main/Data/Base/Base.wz" -ef "$game/Data/Base/Base.wz" ] && return 0
+    echo "== 第 $MAPLE_INSTANCE 組的遊戲目錄跟主目錄不一致 → 重建"
+    rm -rf "$game.new"
+    clone "$game.new" || { rm -rf "$game.new"; warn "重建失敗,照舊的開"; return 0; }
+    find "$game" -maxdepth 1 -name 'Maple_*.jpg' -exec mv -t "$game.new" {} +
+    rm -rf "$game.old" && mv "$game" "$game.old" && mv "$game.new" "$game" && rm -rf "$game.old"
+}
+
+sync() {
+    # 兩個 maple 同時開:一個在更新時另一個不要也來(cmsdl 自己的鎖只擋「完全相同的指令」)
+    mkdir -p "$CACHE"
+    exec 8>"$CACHE/game.lock"
+    flock 8
+    update_main
+    [ -z "${MAPLE_INSTANCE:-}" ] || sync_instance
+}
+
+case "${1:-}" in
+    fetch)   fetch ;;
+    install) install ;;
+    sync)    sync ;;
+    clone)   clone "${2:?maple-game clone <目錄>}" ;;
+    *)       awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "$0"; exit 2 ;;
+esac

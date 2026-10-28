@@ -9,22 +9,26 @@
 #   maple session    session 還活著嗎(= maple-login status)
 #   maple update     更新腳本 + runner 到最新 Release(--rollback 退 runner;不分組別,一次全部)
 #   maple setup      重跑 prefix/setup-prefix.sh(prefix 沒建完、或 update 時 setup 失敗,修好原因後用這個補)
+#   maple install    下載整份遊戲(約 70GB)到 env.sh 的 GAME_DIR(用 cmsdl;中斷了重跑會接著下)
 #   其他一律原樣轉給 maple-login:maple otp / forget / keepalive / --name … 都照舊能用
 #
-# 開遊戲時一天查一次有沒有新版,有就印一行,不擋。
+# 開遊戲前:遊戲有新版就先用 cmsdl 更新(tools/maple-game;失敗就照開,遊戲會自己叫 Patcher.exe)。
+# 腳本 / runner 一天查一次有沒有新版,有就印一行,不擋。
 #
 # 多開:前面加 -2 ~ -9 就是第 N 組,其餘用法完全一樣
 #   maple -2 setup   建第 2 組(一次就好):遊戲目錄 Data/ hardlink、其餘複製(約 600MB),寫 env-2.sh,建 prefix;
 #                    已經建過就只重跑 setup-prefix.sh(同 maple setup)
 #   maple -2         開第 2 組並登入;maple -2 stop / status / login …
+#                    主目錄更新過的話,開之前會自動重建這組的遊戲目錄(截圖保留,prefix 不動)
 #   每組各記各的「上次選的帳號」。
 # 設定檔:$MAPLE_ENV(預設 ~/.config/maplestory-tw/env.sh,從 env.example 複製;第 N 組是 env-N.sh),不用 source。
 set -euo pipefail
 HERE=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)     # 經 ~/.local/bin 的 symlink 也找得到 repo
 CFG=${XDG_CONFIG_HOME:-$HOME/.config}/maplestory-tw
 
-# update 在載入 env 之前:第一次安裝時 WINE_ROOT 指的 runner 還不存在
+# update / install 在載入 env 之前:第一次安裝時 WINE_ROOT 指的 runner 還不存在
 if [ "${1:-}" = update ]; then shift; exec "$HERE/maple-update" "$@"; fi
+if [ "${1:-}" = install ]; then exec "$HERE/maple-game" install; fi
 
 # 建第 N 組:從主設定的遊戲目錄分出一份,prefix 全新
 setup_instance() {
@@ -32,16 +36,9 @@ setup_instance() {
     # shellcheck source=/dev/null  # 使用者自己的設定檔,不在 repo 裡
     source "$main"
     data=${MAPLE_DATA:-${XDG_DATA_HOME:-$HOME/.local/share}/maplestory-tw}/instances/$n
-    [ -f "$GAME_DIR/MapleStory.exe" ] || { echo "主設定的 GAME_DIR 裡沒有 MapleStory.exe:$GAME_DIR" >&2; return 1; }
     [ -e "$data/game" ] && { echo "$data/game 已經存在;要重建先刪它" >&2; return 1; }
-    mkdir -p "$data/game"
     echo "== 遊戲目錄 → $data/game"
-    # Data/(68GB)執行時不會被寫 → hardlink 不佔空間;其餘(BlackCipher 的 log 等)會被寫,真的複製。截圖不帶。
-    cp -al "$GAME_DIR/Data" "$data/game/" || {
-        echo "hardlink 失敗(遊戲目錄跟 $data 不在同一個檔案系統?)。把 MAPLE_DATA 設到同一顆碟上再試" >&2; return 1; }
-    (cd "$GAME_DIR" && for e in *; do
-        case $e in Data|Maple_*.jpg) ;; *) cp -a "$e" "$data/game/" ;; esac
-    done)
+    "$HERE/maple-game" clone "$data/game"
     {
         echo "# maple -$n 的設定:沿用主設定(wine、字型、gamescope…),只換 prefix 與遊戲目錄。$(date +%F) 由 maple -$n setup 產生"
         echo "source \"$main\""
@@ -59,6 +56,7 @@ if [[ ${1:-} =~ ^-([2-9])$ ]]; then
     export MAPLE_INSTANCE=${BASH_REMATCH[1]}
     shift
     if [ "${1:-}" = setup ] && [ ! -e "$CFG/env-$MAPLE_INSTANCE.sh" ]; then setup_instance "$MAPLE_INSTANCE"; exit; fi
+    export MAPLE_ENV_MAIN=${MAPLE_ENV:-$CFG/env.sh}       # maple-game 要找主目錄
     export MAPLE_ENV=$CFG/env-$MAPLE_INSTANCE.sh
     [ -f "$MAPLE_ENV" ] || { echo "第 $MAPLE_INSTANCE 組還沒建:maple -$MAPLE_INSTANCE setup" >&2; exit 1; }
     unset WINE_ROOT WINEPREFIX GAME_DIR          # 一定重載,不吃外面 source 過的主設定
@@ -84,6 +82,9 @@ ws_running()   { ours -x wineserver; }
 
 cmd_game() {
     if game_running; then echo "遊戲已經在跑,不重開"; return 0; fi
+    "$HERE/maple-game" sync || echo "⚠ 遊戲更新檢查出錯,照開" >&2
+    [ -f "$GAME_DIR/MapleStory.exe" ] || {
+        echo "$GAME_DIR 裡沒有 MapleStory.exe。已經有遊戲:改 env.sh 的 GAME_DIR 指過去;沒有:maple install 下載" >&2; return 1; }
     # setup 沒跑完(中途失敗、或 maple update 之前就先開過遊戲,wine 自己建了空 prefix)遊戲起不來 —— 現在講,不要等登入表單 240 秒
     "$HERE/../prefix/setup-prefix.sh" --check
     if ws_running; then
