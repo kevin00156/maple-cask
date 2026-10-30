@@ -54,6 +54,9 @@ fetch() {
 # 上次 cmsdl 整份下載 / 修復沒完成。這時 --patch 會自己改走整份下載(70GB),不能在開遊戲時默默觸發
 unfinished() { [ -e "$1/.incomplete_tms" ] || [ -e "$1/Data/.incomplete" ]; }
 
+# 檔案裡有 hole(從沒寫過的區段)。cmsdl 下載前先把檔案撐到全長,中斷的話沒下到的部分就是 hole
+holey() { python3 -Ic 'import os,sys; f=os.open(sys.argv[1],os.O_RDONLY); sys.exit(os.lseek(f,0,os.SEEK_HOLE)>=os.fstat(f).st_size)' "$1"; }
+
 install() {
     local dir
     dir=$(main_game_dir)
@@ -76,6 +79,8 @@ behind() {
     tgt=$(sed -n 's/^target version: *\([0-9]*\)$/\1/p' <<<"$out")
     if [ -z "$cur" ] || [ -z "$tgt" ]; then warn "查不到遊戲最新版本,這次不更新"; return 0; fi
     [ "$cur" -lt "$tgt" ] && { echo "V$cur → V$tgt"; return 0; }
+    # 大小對但內容沒下完(下面 update_main 的 rm 修好之前裝上去的)。--patch 同版本也會重抓 ExePatch.dat,所以照樣更新就修好
+    holey "$dir/MapleStory.exe" && { echo "MapleStory.exe 沒下載完整,重抓 V$cur 的熱修補"; return 0; }
     len=$(curl -fsI --max-time 10 "$EXE_PATCH_URL/$(printf %05d "$cur")/ExePatch.dat" 2>/dev/null |
           tr -d '\r' | sed -n 's/^[Cc]ontent-[Ll]ength: *//p')
     [ -n "$len" ] && [ "$len" != "$(stat -c %s "$dir/MapleStory.exe")" ] && echo "V$cur 的 MapleStory.exe 熱修補"
@@ -92,6 +97,9 @@ update_main() {
     [ -n "$why" ] || return 0
     if busy; then warn "遊戲有新版($why),但有一組還在跑,這次不更新"; return 0; fi
     echo "== 遊戲更新:$why"
+    # cmsdl 下載 ExePatch.dat 前先把檔案 set_len 成全長,下次又只看大小就當「已下載」直接改名成 MapleStory.exe。
+    # 熱修補中途 ^C 再開,裝上去的就是 172MB 全零的 exe(2026-10-30)。成功時它會被改名掉,還在就一定是殘骸
+    rm -f "$dir/ExePatch.dat"
     "$CMSDL" tms --patch latest "$dir" --no-gui || warn "cmsdl 更新失敗,照開(遊戲會自己叫 Patcher.exe)"
 }
 
@@ -126,7 +134,7 @@ sync() {
     # 兩個 maple 同時開:一個在更新時另一個不要也來(cmsdl 自己的鎖只擋「完全相同的指令」)
     mkdir -p "$CACHE"
     exec 8>"$CACHE/game.lock"
-    flock 8
+    flock -n 8 || { echo "另一個 maple 正在更新遊戲,等它跑完…"; flock 8; }
     update_main
     [ -z "${MAPLE_INSTANCE:-}" ] || sync_instance
 }
