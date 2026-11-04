@@ -13,7 +13,7 @@
 #   其他一律原樣轉給 maple-login:maple otp / forget / keepalive / --name … 都照舊能用
 #
 # 開遊戲前:遊戲有新版就先用 cmsdl 更新(tools/maple-game;失敗就照開,遊戲會自己叫 Patcher.exe)。
-# 腳本 / runner 一天查一次有沒有新版,有就印一行,不擋。
+# 腳本 / runner 有新版(一天真的連網查一次)就問要不要先更新,預設不更新(回 N 當天不再問);不在終端機或有遊戲在跑就只印一行。
 #
 # 多開:前面加 -2 ~ -9 就是第 N 組,其餘用法完全一樣
 #   maple -2 setup   建第 2 組(一次就好):遊戲目錄 Data/ hardlink、其餘複製(約 600MB),寫 env-2.sh,建 prefix;
@@ -29,6 +29,24 @@ CFG=${XDG_CONFIG_HOME:-$HOME/.config}/maplestory-tw
 # update / install 在載入 env 之前:第一次安裝時 WINE_ROOT 指的 runner 還不存在
 if [ "${1:-}" = update ]; then shift; exec "$HERE/maple-update" "$@"; fi
 if [ "${1:-}" = install ]; then exec "$HERE/maple-game" install; fi
+
+# 開遊戲前問要不要先 maple update。update 會 git 快轉換掉這支檔案,bash 不能接著讀 → 更新完 exec 從頭重跑
+offer_update() {
+    local msg ans declined=${XDG_CACHE_HOME:-$HOME/.cache}/maplestory-tw/update-declined
+    [ -z "${MAPLE_OFFERED:-}" ] || return 0
+    msg=$("$HERE/maple-update" --check 2>/dev/null) || return 0      # 沒網路就安靜跳過
+    [ -n "$msg" ] || return 0
+    echo "$msg"
+    # update 一次換全部組別,有任何一組在跑就做不了;今天回過 N 也不再問 → 只提示
+    [ -t 0 ] && ! pgrep -f 'MapleStory\.exe' >/dev/null || return 0
+    [ "$(cat "$declined" 2>/dev/null)" != "$(date +%F)" ] || return 0
+    read -rp "現在更新?[y/N] " ans
+    [[ $ans == [yY]* ]] || { mkdir -p "${declined%/*}" && date +%F >"$declined"; return 0; }
+    "$HERE/maple-update" && MAPLE_OFFERED=1 exec "$0" "$@"
+    echo "⚠ 更新沒做完,照舊開遊戲" >&2
+}
+a=${1:-}; [[ $a =~ ^-[2-9]$ ]] && a=${2:-}
+case $a in ""|game) offer_update "$@" ;; esac
 
 # 建第 N 組:從主設定的遊戲目錄分出一份,prefix 全新
 setup_instance() {
@@ -96,7 +114,6 @@ cmd_game() {
     mkdir -p "$(dirname "$log")"
     MAPLE_LOG=$log setsid -f "$HERE/gs-run.sh" >>"$log" 2>&1     # setsid:Ctrl-C 這個終端機不會連遊戲一起殺
     echo "遊戲啟動中(gamescope)。log → $log"
-    "$HERE/maple-update" --check || true      # 遊戲開機的空檔順便查;沒網路就安靜跳過
 }
 
 # 等登入表單最多 4 分鐘,出現才鑄 OTP,不跟 2 分鐘窗口賽跑。遊戲行程還沒起來也照等(maple 剛開完遊戲就是這樣)

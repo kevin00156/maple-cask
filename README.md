@@ -78,7 +78,7 @@ maple help                # 全部指令
 - 用 Lutris / Heroic:執行檔設成 `tools/gs-run.sh`(不是 wine 本身),環境變數照 `env.sh` 填。
 
 ## 更新
-`maple` 開遊戲時一天查一次有沒有新 Release,有的話會印一行。要更新:
+`maple` 開遊戲前一天查一次有沒有新 Release,有的話會問要不要先更新(預設不更新)。之後要自己更新:
 ```bash
 maple stop && maple update    # 腳本 git 快轉、下載新 runner、每一組 prefix 重跑 setup
 maple update --rollback       # 新 runner 有問題:退回上一版(只留一版)
