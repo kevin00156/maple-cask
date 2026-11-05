@@ -100,7 +100,7 @@ leftover() {
     [ -d "$DATA" ] || return 0
     rmdir "$DATA" 2>/dev/null && return 0
     rest=$(find "$DATA" -mindepth 1 -maxdepth 1 -printf '%f ')
-    echo "留著:$DATA 裡還有 $rest(不是 maple 下載的,自己決定)"
+    echo "留著:$DATA 裡還有 ${rest% }(不是 maple 下載的,自己決定)"
 }
 
 how_to_remove_scripts() {
@@ -128,6 +128,7 @@ main() {
     for p in "${DEL[@]}"; do echo "  $p"; done
     echo "  beanfun session($SESSION)與保活 timer(maple-keepalive)"
     command -v secret-tool >/dev/null && echo "  passkey 憑證(Secret Service:service=maple-login account=gamapass)"
+    [ -z "$GAME" ] || echo "遊戲 $GAME 是 maple install 下載的:等一下另外問,預設不刪"
     if [ ${#KEEP[@]} -gt 0 ]; then
         echo "不會動:"
         for p in "${KEEP[@]}"; do echo "  $p"; done
@@ -141,6 +142,7 @@ main() {
     forget_session
     forget_passkey
     for p in "${DEL[@]}"; do rm -rf -- "$p"; done
+    rmdir "$RUNTIME" 2>/dev/null || true       # forget 會順手建出空的 runtime 目錄
     [ -z "$GAME" ] || { rm -rf -- "$GAME" && echo "遊戲已刪除:$GAME"; }
     leftover
     echo "完成。"

@@ -1,7 +1,8 @@
 #!/bin/bash
 # maple-game — 遊戲檔案:下載、更新、多開組跟上主目錄。經 maple 呼叫,不用自己跑。
 #   maple-game fetch     取得 build/CMSDL_VERSION 那版 cmsdl(sha256 對 build/CMSDL_SHA256)。maple update 會跑
-#   maple-game install   下載整份遊戲(約 70GB)到主設定的 GAME_DIR;只接受不存在 / 空的 / 上次沒下完的目錄
+#   maple-game install   下載整份遊戲(約 70GB)到主設定的 GAME_DIR;只接受不存在 / 空的 / 上次沒下完的目錄。
+#                        下載完寫 GAME_DIR/.maple-cask-owned(maple uninstall 靠它判斷能不能刪)
 #   maple-game sync      開遊戲前:主目錄有新版就更新;MAPLE_INSTANCE=N 時再把第 N 組對齊主目錄
 #   maple-game clone D   從主目錄分出一份遊戲目錄到 D(Data/ hardlink,其餘複製)。maple -N setup 用
 #
@@ -68,6 +69,8 @@ install() {
     fetch
     echo "== 下載整份遊戲到 $dir(約 70GB;中斷了重跑 maple install 會接著下)"
     "$CMSDL" tms --download "$dir" --no-gui
+    # 這份是 maple 下載的:maple uninstall 才會問要不要一起刪(沒這個標記的遊戲目錄只印路徑,不碰)
+    echo "maple install $(date +%F)" >"$dir/.maple-cask-owned"
     echo "完成。開:maple"
 }
 
