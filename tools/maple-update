@@ -8,11 +8,11 @@
 #   maple update --busy      任何一組的遊戲 / wineserver 在跑就 exit 0(給 maple-game 用)
 #   maple update --version   印腳本版本
 #
-# 腳本版本 = $REPO/VERSION(套件安裝)或 git describe 的最近 tag(git clone)。每個 v* tag 都有一份 runner,
+# 腳本版本 = $REPO/VERSION(套件安裝)或 git describe 的最近 v* tag(git clone)。每個 v* tag 都有一份 runner,
 # runner 追的是腳本版本那個 tag,不是「最新」—— 腳本與 runner 是一起發版的一對。
 # 什麼會被更新,各自一條規則,不看你是誰:
 #   腳本   = git clone 的 HEAD 在最新 Release tag 的歷史上、追蹤中的檔案沒被改 → git merge --ff-only
-#            套件安裝($REPO 沒有 .git)不動,交給 apt / pacman
+#            套件安裝($REPO 有 VERSION)不動,交給 apt / pacman
 #   runner = env.sh 的 WINE_ROOT 指向 $MAPLE_DATA/runners/current → 下載腳本版本那份、校驗、解開、換 symlink
 #   不符合的那項就跳過並說原因;自己 build / 自己放 runner 的人不會被動到。
 # 腳本版本跟上次同步的不同(或 runner 換了),每一組都重跑 prefix/setup-prefix.sh:它會把 runner 裡的 DXVK
@@ -35,14 +35,14 @@ MIRROR=${MAPLE_MIRROR-https://dl.qazsskevin.org}
 
 die() { echo "$*" >&2; exit 1; }
 
-# 套件安裝:整份腳本在唯讀的 /usr/share/maple-cask,沒有 .git
-packaged() { [ ! -e "$REPO/.git" ]; }
+# 套件安裝:整份腳本在唯讀的 /usr/share/maple-cask,install.sh 在裡面放了 VERSION(git clone 沒有這個檔)
+packaged() { [ -f "$REPO/VERSION" ]; }
 
 # 腳本版本(例如 v0.2.3)。查不到(沒有 tag 的 clone)就印空字串
 version() {
     local v
-    if [ -f "$REPO/VERSION" ]; then read -r v <"$REPO/VERSION"; echo "$v"; return; fi
-    git -C "$REPO" describe --tags --abbrev=0 2>/dev/null || true
+    if packaged; then read -r v <"$REPO/VERSION"; echo "$v"; return; fi
+    git -C "$REPO" describe --tags --match 'v*' --abbrev=0 2>/dev/null || true
 }
 
 synced() { cat "$SYNCED" 2>/dev/null || true; }
@@ -167,15 +167,17 @@ refresh_prefixes() {
 }
 
 # runner / prefix 已同步到腳本版本就安靜 exit 0;沒有就印一句(maple 拿來當問題)、exit 1。
-# 舊版升上來的沒有 synced-version:runner 本來就是這版(或自己管 runner)就當同步過,靜默補寫,不要問
+# 沒有 synced-version 但已經有 runner(或自己管 runner)= 舊版升上來、第一次碰到這個機制:維持現狀,
+# 靜默記成已同步、不問 —— 不然會把 runner 預設換掉(rollback 過的還會被同步回去)、沒終端機時擋住開遊戲。
+# 想換 runner 自己 maple update。完全沒有 runner 才是第一次使用
 synced_check() {
-    local ver cur
+    local ver
     ver=$(version)
     [ -n "$ver" ] && [ "$(synced)" != "$ver" ] && [ -f "$MAIN_ENV" ] || return 0     # 沒設定檔:判斷不了 runner 歸誰管
-    cur=$(readlink "$RUNNERS/current" 2>/dev/null || true)
     if [ ! -f "$SYNCED" ]; then
-        if [ -n "$(runner_why)" ] || [ "$cur" = "$(runner_of "$ver")" ]; then mark_synced "$ver"; return 0; fi
-        [ -n "$cur" ] || { echo "第一次使用:下載 $ver 的 wine runner 並建 prefix"; return 1; }
+        if [ -n "$(runner_why)" ] || [ -e "$RUNNERS/current" ]; then mark_synced "$ver"; return 0; fi
+        echo "第一次使用:下載 $ver 的 wine runner 並建 prefix"
+        return 1
     fi
     echo "腳本已更新到 $ver,同步 runner 與 prefix"
     return 1
@@ -209,9 +211,28 @@ need_version() {
     echo "$ver"
 }
 
+# current 換成 $1 版的 runner($2 = 現在的,變 previous)。本地已經有那版(rollback 過再 update 回來)
+# 就直接切,不連網
+switch_runner() {
+    local ver=$1 cur=$2 want tar tarurl sumsurl mb
+    want=$(runner_of "$ver")
+    if [ -d "$RUNNERS/$want" ]; then
+        echo "  runner:→ $want(本地已有,不用下載)"
+    else
+        read -r _ tar tarurl sumsurl mb < <(release "tags/$ver") || true
+        [ -n "${sumsurl:-}" ] || die "查不到 $ver 的 Release(沒網路?tag 剛推、CI 還沒發完?)"
+        want=${tar%.tar.xz}
+        echo "  runner:→ $want"
+        install_runner "$want" "$tarurl" "$sumsurl" "$ver" "$mb"
+    fi
+    [ -z "$cur" ] || point previous "$cur"
+    point current "$want"
+    prune
+}
+
 # runner + 每一組 prefix 帶到腳本版本 $1,成功才寫 synced-version。已經同步過就什麼都不做
 sync_to() {
-    local ver=$1 rwhy cur want tar tarurl sumsurl mb changed=
+    local ver=$1 rwhy cur changed=
     rwhy=$(runner_why)
     cur=$(readlink "$RUNNERS/current" 2>/dev/null || true)
     if [ -n "$rwhy" ]; then
@@ -219,14 +240,7 @@ sync_to() {
     elif [ "$cur" = "$(runner_of "$ver")" ]; then
         echo "  runner:已是 $cur"
     else
-        read -r _ tar tarurl sumsurl mb < <(release "tags/$ver") || true
-        [ -n "${sumsurl:-}" ] || die "查不到 $ver 的 Release(沒網路?tag 剛推、CI 還沒發完?)"
-        want=${tar%.tar.xz}
-        echo "  runner:→ $want"
-        install_runner "$want" "$tarurl" "$sumsurl" "$ver" "$mb"
-        [ -z "$cur" ] || point previous "$cur"
-        point current "$want"
-        prune
+        switch_runner "$ver" "$cur"
         changed=1
     fi
     if [ -z "$changed" ] && [ "$(synced)" = "$ver" ]; then echo "已同步到 $ver,不用重跑 setup"; return 0; fi
@@ -293,11 +307,14 @@ rollback() {
     fi
 }
 
+# update / sync 做完都要確保 cmsdl 在
+fetch_cmsdl() { "$HERE/maple-game" fetch || echo "cmsdl 沒裝成,開遊戲時就不會自動更新遊戲;重跑 maple update 會再試"; }
+
 # 整支包在函式裡、最後一行才執行:git merge 會在執行中途換掉這個檔案,bash 得先讀完整份
 main() {
     case "${1:-}" in
-        ""|--sync)  if [ -z "${1:-}" ]; then update; else sync_only; fi
-                    "$HERE/maple-game" fetch || echo "cmsdl 沒裝成,開遊戲時就不會自動更新遊戲;重跑 maple update 會再試" ;;
+        "")         update; fetch_cmsdl ;;
+        --sync)     sync_only; fetch_cmsdl ;;
         --check)    check ;;
         --synced)   synced_check ;;
         --rollback) rollback ;;

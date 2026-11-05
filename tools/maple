@@ -35,12 +35,21 @@ HERE=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)     # 經 ~/.local/bin 的 
 REPO=$(dirname "$HERE")
 CFG=${XDG_CONFIG_HOME:-$HOME/.config}/maplestory-tw
 
-# 套件安裝:整份腳本在唯讀的 /usr/share/maple-cask,沒有 .git
-packaged() { [ ! -e "$REPO/.git" ]; }
+# 套件安裝:整份腳本在唯讀的 /usr/share/maple-cask,install.sh 在裡面放了 VERSION(git clone 沒有這個檔)
+packaged() { [ -f "$REPO/VERSION" ]; }
 
-# 套件版與 git clone 版同時在:PATH 上的 maple 不是自己就提示一行,不擋
+# 兩種都不是(GitHub 的 zip 下載):不知道腳本版本,runner 跟不上、更新也沒路走。
+# 開遊戲 / update 這些要用到版本的先講清楚;login、qr 等不需要版本的照常
+need_kind() {
+    packaged || [ -e "$REPO/.git" ] && return 0
+    echo "$REPO 不是 git clone 也不是套件安裝(GitHub 的 zip 下載?)。只支援 git clone 或 apt / Arch 套件,見 README「安裝」" >&2
+    exit 1
+}
+
+# 套件版與 git clone 版同時在:PATH 上的 maple 不是自己就提示,不擋。
+# 兩份的腳本版本不同時,每一份都會把 runner / prefix 同步成自己那版,輪流用就是來回換
 coexist() {
-    local me link other fix
+    local me link other fix flap="  兩份版本不同時輪流執行,會互相把 runner / prefix 同步成自己那版(每次換都重下、重跑 setup)"
     me=$(readlink -f "$0")
     link=$(command -v maple 2>/dev/null || true)
     other=${link:+$(readlink -f "$link")}
@@ -49,8 +58,10 @@ coexist() {
     if [ -n "$other" ] && [ "$other" != "$me" ]; then
         if packaged; then echo "注意:PATH 上的 maple 是 $other,不是這份套件版;要改用套件版:$fix" >&2
         else echo "注意:PATH 上的 maple 是 $other,不是這份 git clone($me)" >&2; fi
+        echo "$flap" >&2
     elif ! packaged && [ -e /usr/bin/maple ] && [ "$(readlink -f /usr/bin/maple)" != "$me" ]; then
         echo "注意:系統也裝了套件版 maple,PATH 上這份 git clone 蓋過了它;要改用套件版:$fix" >&2
+        echo "$flap" >&2
     fi
 }
 coexist
@@ -76,8 +87,13 @@ ensure_env() {
     echo "設定檔 → $envf(FONTS_DIR 選用:有一份 Windows 字型就在裡面設,中文才不會糊)"
 }
 
-# update / install / uninstall 在載入 env 之前:第一次安裝時 WINE_ROOT 指的 runner 還不存在
-if [ "${1:-}" = update ]; then shift; [ $# -gt 0 ] || ensure_env; exec "$HERE/maple-update" "$@"; fi
+# update / install / uninstall 在載入 env 之前:第一次安裝時 WINE_ROOT 指的 runner 還不存在。
+# 這三個本來就不分組(一次全部 / 下載到主設定的 GAME_DIR),-N 加在前面就明講,不要轉給 maple-login
+if [[ ${1:-} =~ ^-[2-9]$ ]] && [[ ${2:-} =~ ^(update|install|uninstall)$ ]]; then
+    echo "maple $2 不分組別(一次處理全部 / 主設定),直接跑 maple $2" >&2
+    exit 2
+fi
+if [ "${1:-}" = update ]; then need_kind; shift; [ $# -gt 0 ] || ensure_env; exec "$HERE/maple-update" "$@"; fi
 if [ "${1:-}" = install ]; then ensure_env; exec "$HERE/maple-game" install; fi
 if [ "${1:-}" = uninstall ]; then exec "$HERE/maple-uninstall"; fi
 case ${1:-} in -h|--help|help) awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "$0"; exit ;; esac
@@ -106,6 +122,10 @@ ensure_synced() {
     [ -n "$msg" ] || return 0
     # 同步要重跑每一組的 setup,有任何一組在跑就做不了 → 只提示
     if "$HERE/maple-update" --busy; then echo "⚠ $msg:有一組還在跑,全部關掉後 maple update" >&2; return 0; fi
+    # 同步會跑 setup:要新建 prefix 卻沒有 zh_TW locale,就在下載 runner 之前停下,不要等 prefix 用錯 code page 建好。
+    # 已經建好的(ACP 950)不擋:看主設定的 WINEPREFIX
+    # shellcheck source=/dev/null  # 使用者自己的設定檔,不在 repo 裡
+    (source "${MAPLE_ENV:-$CFG/env.sh}" >/dev/null 2>&1 || true; "$HERE/../prefix/setup-prefix.sh" --locale) || exit 1
     [ -t 0 ] || { echo "$msg:maple update(先關遊戲)" >&2; exit 1; }
     read -rp "$msg?[Y/n] " ans
     [[ $ans != [nN]* ]] || return 0
@@ -115,6 +135,7 @@ ensure_synced() {
 a=${1:-}; [[ $a =~ ^-[2-9]$ ]] && a=${2:-}
 case $a in
     ""|game)
+        need_kind
         [[ ${1:-} =~ ^-[2-9]$ ]] || ensure_env       # 多開組沿用主設定,沒建過下面會說
         offer_update "$@"
         ensure_synced ;;
@@ -127,6 +148,8 @@ setup_instance() {
     source "$main"
     data=${MAPLE_DATA:-${XDG_DATA_HOME:-$HOME/.local/share}/maplestory-tw}/instances/$n
     [ -e "$data/game" ] && { echo "$data/game 已經存在;要重建先刪它" >&2; return 1; }
+    # 新 prefix 一定要 zh_TW locale:分遊戲目錄(約 600MB)之前就先擋
+    (unset WINEPREFIX; "$HERE/../prefix/setup-prefix.sh" --locale) || return 1
     echo "== 遊戲目錄 → $data/game"
     "$HERE/maple-game" clone "$data/game"
     {

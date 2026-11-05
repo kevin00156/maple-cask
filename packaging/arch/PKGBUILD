@@ -1,8 +1,19 @@
 # Maintainer: kevin <qazsskevin@gmail.com>
-# 發版:packaging/arch/update-pkgbuild.sh v<版本>(改 pkgver、算 tag tarball 的 sha256、產 .SRCINFO)。
+# 從本地 checkout 打包:cd packaging/arch && makepkg -si(打的是 checkout 當下的檔案,不下載任何東西)。
+# AUR 用的版本(tag tarball + sha256 + .SRCINFO)由 packaging/arch/update-pkgbuild.sh 產到別的目錄,不改這份。
 # 裝哪些檔在 packaging/install.sh(跟 .deb 共用),這裡不另外列。
+# shellcheck disable=SC2034,SC2154  # 這些變數給 makepkg 讀;startdir / pkgdir 由 makepkg 提供
 pkgname=maple-cask
-pkgver=0.2.2
+# --- 本地 checkout 專用(update-pkgbuild.sh 產 AUR 版時,這段整段換成固定的 _src / _tag / pkgver)---
+# 版本在這裡直接算,不用 pkgver():makepkg 會把 pkgver() 的結果寫回這個檔,clone 就變髒、之後 git pull 會卡住。
+# _tag = 最近的 v* tag(寫進套件的 VERSION,runner 跟著它走,同 git clone 的 maple update);沒有 git 就讀 VERSION。
+# pkgver = git describe 換成 pacman 比得出新舊的寫法:v0.2.3-4-gabc123 → 0.2.3.r4.gabc123
+_src=$startdir/../..
+_tag=$(git -C "$_src" describe --tags --match 'v*' --abbrev=0 2>/dev/null || cat "$_src/VERSION" 2>/dev/null) ||
+    { echo "PKGBUILD:$_src 不是 git clone(或沒有 v* tag),推不出版本;請用 git clone(再 git fetch --tags)" >&2; exit 1; }
+_ver=$(git -C "$_src" describe --tags --match 'v*' 2>/dev/null || echo "$_tag")
+pkgver=$(sed -e 's/^v//' -e 's/-\([0-9]*\)-g\([0-9a-f]*\)$/.r\1.g\2/' -e 's/-/_/g' <<<"$_ver")
+# --- 本地 checkout 專用(結束)---
 pkgrel=1
 pkgdesc='MapleStory TW launcher for Linux (gamescope + patched wine, beanfun OTP login); sets kernel.split_lock_mitigate=0'
 arch=(any)
@@ -18,9 +29,9 @@ optdepends=(
 )
 options=(!strip !debug)   # 唯一的二進位是 mingw 編的 PE(.exe),不給宿主的 ELF strip 碰
 install=maple-cask.install
-source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('SKIP')
+source=()
+sha256sums=()
 
 package() {
-    LICENSE_DIR=/usr/share/licenses/$pkgname "$pkgname-$pkgver"/packaging/install.sh "$pkgdir" "v$pkgver"
+    LICENSE_DIR=/usr/share/licenses/$pkgname "$_src"/packaging/install.sh "$pkgdir" "$_tag"
 }

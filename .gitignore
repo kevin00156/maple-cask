@@ -3,3 +3,7 @@ tasks/
 __pycache__/
 *.exe
 gamefont.bmp
+# makepkg -si 在 packaging/arch 留下的東西
+packaging/arch/src/
+packaging/arch/pkg/
+packaging/arch/*.pkg.tar.*

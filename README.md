@@ -17,9 +17,9 @@ maple-cask(楓木桶)—— 台版新楓之谷 in Linux。
   ```bash
   sudo locale-gen zh_TW.UTF-8
   ```
-  Arch / CachyOS 等 Arch 系的 `locale-gen` 不吃參數(照上面打會「成功」但什麼都沒生),要先在 `/etc/locale.gen` 打開那一行:
+  Debian 與 Arch / CachyOS 等 Arch 系的 `locale-gen` 不吃參數(照上面打會「成功」但什麼都沒生),要先在 `/etc/locale.gen` 打開那一行:
   ```bash
-  sudo sed -i 's/^#zh_TW.UTF-8 UTF-8/zh_TW.UTF-8 UTF-8/' /etc/locale.gen && sudo locale-gen
+  sudo sed -i 's/^# *zh_TW.UTF-8 UTF-8/zh_TW.UTF-8 UTF-8/' /etc/locale.gen && sudo locale-gen
   locale -a | grep -i zh_TW     # 有 zh_TW.utf8 才算數
   ```
 - 遊戲本體(約 70GB):已經有現成的目錄,第一次開 `maple` 時告訴它路徑;沒有的話 `maple` 會問要不要用
@@ -49,7 +49,7 @@ echo 'deb [signed-by=/etc/apt/keyrings/maple-cask.gpg] https://dl.qazsskevin.org
 sudo apt update && sudo apt install maple-cask
 ```
 
-**Arch / CachyOS**:AUR 還在註冊中,先自己打包:
+**Arch / CachyOS**:AUR 還在註冊中,先從 clone 自己打包(打的是 clone 當下的檔案;之後更新:`git pull && makepkg -si`):
 ```bash
 git clone https://github.com/kevin00156/maple-cask.git && cd maple-cask/packaging/arch && makepkg -si
 ```
@@ -110,7 +110,8 @@ maple update --rollback       # 新 runner 有問題:退回上一版(只留一�
 maple uninstall    # 先列出要刪的再確認:runner、prefix、多開、設定、快取、beanfun session、passkey
 ```
 `maple` 下載的遊戲會另外問(預設不刪);自己放的遊戲目錄、`env.sh` 裡指到別處的 `WINEPREFIX` / `WINE_ROOT`
-只印路徑,不動。最後移除腳本本身:`sudo apt remove maple-cask` / `sudo pacman -R maple-cask`;
+只印路徑,不動。遊戲目錄放在要刪的目錄裡(例如裝在 prefix 的 `drive_c` 底下)的話,那個目錄整個留著,
+除非你選擇連遊戲一起刪。最後移除腳本本身:`sudo apt remove maple-cask` / `sudo pacman -R maple-cask`;
 git clone 則 `rm ~/.local/bin/maple` 並刪掉 clone 目錄。
 
 ## 從 git clone 換成套件

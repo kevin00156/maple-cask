@@ -1,21 +1,22 @@
 #!/bin/bash
 # install.sh DESTDIR [VERSION] — 把 maple-cask 裝進 DESTDIR(打包用,不會碰真正的 /)。
 #   「裝哪些檔」只有這一份:packaging/build-deb.sh 與 packaging/arch/PKGBUILD 都呼叫它。
-#   VERSION 是 tag(v0.2.3 或 0.2.3 都行);沒給就用 git describe --tags --abbrev=0。
-#   LICENSE_DIR:LICENSE 放哪(預設跟文件一起在 /usr/share/doc/maple-cask;Arch 給 /usr/share/licenses/maple-cask)
+#   VERSION 是 tag(v0.2.3 或 0.2.3 都行);沒給就用 git describe --tags --match 'v*' --abbrev=0。
+#   LICENSE_DIR:有給(Arch:/usr/share/licenses/maple-cask)就把 LICENSE 全文放那裡;
+#   沒給(.deb)就照 Debian 的規矩寫 /usr/share/doc/maple-cask/copyright,全文指向 common-licenses。
 #
-# 裝好的 /usr/share/maple-cask 沒有 .git —— tools/ 的腳本靠這點判斷「套件模式」,絕不能把 .git 裝進去。
+# 裝好的 /usr/share/maple-cask 有 VERSION —— tools/ 的腳本靠這個檔判斷「套件模式」(git clone 沒有它)。
 # 要 x86_64-w64-mingw32-gcc:mapletype.exe / gamefont.exe 在這裡編好(套件目錄唯讀,runtime 沒辦法編)。
 set -euo pipefail
 umask 022
 
 SRC=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
 DEST=${1:?用法:install.sh DESTDIR [VERSION]}
-VER=${2:-$(git -C "$SRC" describe --tags --abbrev=0)}
+VER=${2:-$(git -C "$SRC" describe --tags --match 'v*' --abbrev=0)}
 VER=v${VER#v}
 SHARE=/usr/share/maple-cask
 DOC_DIR=/usr/share/doc/maple-cask
-LICENSE_DIR=${LICENSE_DIR:-$DOC_DIR}
+LICENSE_DIR=${LICENSE_DIR:-}
 
 # 要裝的檔(相對 repo 根,裝到 $SHARE 底下同一個相對路徑)。目錄另外在 list_files 展開
 FILES=(
@@ -74,9 +75,41 @@ EOF
     chmod 644 "$DEST"/usr/lib/sysctl.d/99-maple-cask.conf "$DEST"/usr/lib/modules-load.d/maple-cask.conf
 }
 
+# .deb 的授權:Debian 要 /usr/share/doc/<套件>/copyright(machine-readable 格式),LGPL 全文系統已有一份
+write_deb_copyright() {
+    install -d -m 755 "$DEST$DOC_DIR"
+    cat > "$DEST$DOC_DIR/copyright" <<'EOF'
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: maple-cask
+Upstream-Contact: kevin <qazsskevin@gmail.com>
+Source: https://github.com/kevin00156/maple-cask
+
+Files: *
+Copyright: 2026 kevin <qazsskevin@gmail.com>
+License: LGPL-2.1-or-later
+
+License: LGPL-2.1-or-later
+ This package is free software; you can redistribute it and/or
+ modify it under the terms of the GNU Lesser General Public
+ License as published by the Free Software Foundation; either
+ version 2.1 of the License, or (at your option) any later version.
+ .
+ This package is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ Lesser General Public License for more details.
+ .
+ On Debian systems, the complete text of the GNU Lesser General
+ Public License version 2.1 can be found in
+ "/usr/share/common-licenses/LGPL-2.1".
+EOF
+    chmod 644 "$DEST$DOC_DIR/copyright"
+}
+
 install_docs() {
     local f
-    install -D -m 644 "$SRC/LICENSE" "$DEST$LICENSE_DIR/LICENSE"
+    if [ -n "$LICENSE_DIR" ]; then install -D -m 644 "$SRC/LICENSE" "$DEST$LICENSE_DIR/LICENSE"
+    else write_deb_copyright; fi
     for f in "$SRC"/README.md "$SRC"/docs/*.md; do
         install -D -m 644 "$f" "$DEST$DOC_DIR/${f##*/}"
     done
