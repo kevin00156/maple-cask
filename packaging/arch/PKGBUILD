@@ -1,0 +1,26 @@
+# Maintainer: kevin <qazsskevin@gmail.com>
+# 發版:packaging/arch/update-pkgbuild.sh v<版本>(改 pkgver、算 tag tarball 的 sha256、產 .SRCINFO)。
+# 裝哪些檔在 packaging/install.sh(跟 .deb 共用),這裡不另外列。
+pkgname=maple-cask
+pkgver=0.2.2
+pkgrel=1
+pkgdesc='MapleStory TW launcher for Linux (gamescope + patched wine, beanfun OTP login); sets kernel.split_lock_mitigate=0'
+arch=(any)
+url=https://github.com/kevin00156/maple-cask
+license=('LGPL-2.1-or-later')
+depends=(gamescope winetricks python python-requests python-cryptography)
+makedepends=(mingw-w64-gcc)
+optdepends=(
+    'libsecret: passkey 自動重登時把憑證存進 Secret Service(secret-tool)'
+    'glib2: passkey 用 gdbus 跟 Secret Service / KWallet 溝通'
+    'xorg-server-xvfb: passkey 的瀏覽器在背景(看不見的 X)跑;沒有就開可見視窗'
+    'chromium: passkey 註冊與自動重登用的瀏覽器(任何 Chromium 系皆可)'
+)
+options=(!strip !debug)   # 唯一的二進位是 mingw 編的 PE(.exe),不給宿主的 ELF strip 碰
+install=maple-cask.install
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+package() {
+    LICENSE_DIR=/usr/share/licenses/$pkgname "$pkgname-$pkgver"/packaging/install.sh "$pkgdir" "v$pkgver"
+}

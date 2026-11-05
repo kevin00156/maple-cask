@@ -1,0 +1,26 @@
+# 裝好 / 升級後立刻套用 kernel 設定(之後每次開機由 systemd-sysctl / systemd-modules-load 自己載)。
+# 容器裡或 kernel 沒有 ntsync 會失敗,不擋安裝。
+apply_kernel_conf() {
+    sysctl -p /usr/lib/sysctl.d/99-maple-cask.conf >/dev/null 2>&1 || true
+    modprobe ntsync 2>/dev/null || true
+}
+
+post_install() {
+    apply_kernel_conf
+}
+
+post_upgrade() {
+    apply_kernel_conf
+}
+
+# 這段提示跟 packaging/deb/postrm 是同一段,改的話兩邊一起改
+post_remove() {
+    cat <<'EOF'
+maple-cask:每個使用者的資料沒有被刪(prefix、wine runner、設定、登入 session、cmsdl):
+  ~/.config/maplestory-tw  ~/.local/share/maplestory-tw  ~/.cache/maplestory-tw
+  ~/.config/systemd/user/maple-keepalive.{service,timer}(開過 keepalive 才有)
+  env.sh 裡 GAME_DIR 指的遊戲目錄(約 70GB)也還在。
+下次請在移除套件前,以各使用者身分先跑 maple uninstall;現在要清就手動 rm -rf 上面的路徑。
+kernel.split_lock_mitigate = 0 會維持到重開機。
+EOF
+}
