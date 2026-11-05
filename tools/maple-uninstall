@@ -4,7 +4,8 @@
 #       beanfun session(連同保活 timer)、passkey 憑證(Secret Service 裡 service=maple-login account=gamapass)
 #   先全部列出來,確認了才刪。遊戲或任何一組的 wineserver 在跑就不做。
 #   只刪位在 $MAPLE_DATA / 設定 / 快取目錄底下的路徑:env.sh 裡指到別處的 WINEPREFIX、WINE_ROOT 只印出來,
-#   不碰(WINEPREFIX=$HOME 這種設定照刪的話就是災難)。
+#   不碰(WINEPREFIX=$HOME 這種設定照刪的話就是災難)。要刪的東西只有 del() 一個入口,它拒絕 /、家目錄
+#   與它們的上層;包著遊戲目錄的(例如遊戲裝在 prefix 的 drive_c 裡)也不刪,除非你選擇連遊戲一起刪。
 #   遊戲目錄:maple install 下載的(有 .maple-cask-owned)才另外問,預設不刪;其餘只印路徑。
 #   腳本本身不刪:最後印出怎麼移除套件 / git clone。
 set -euo pipefail
@@ -17,7 +18,11 @@ CACHE=${XDG_CACHE_HOME:-$HOME/.cache}/maplestory-tw
 RUNTIME=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/maplestory-tw
 SESSION=${MAPLE_SESSION_FILE:-$RUNTIME/session.json}
 
+
 die() { echo "$*" >&2; exit 1; }
+
+# 套件安裝:install.sh 在裝好的目錄放了 VERSION(git clone 沒有這個檔)
+packaged() { [ -f "$REPO/VERSION" ]; }
 
 # 在乾淨環境裡 source 一份 env,印出某個變數(同 maple-update)
 # shellcheck disable=SC2016  # 單引號是故意的:$1/$2 要由內層 bash -c 展開
@@ -32,16 +37,35 @@ under() {
     return 1
 }
 
-DEL=()     # 要刪的
+# 刪掉 $1 會連 $2 一起刪:兩者 resolve 後,$1 等於 $2 或是它的上層。
+# 一律 resolve(連結指到哪就算哪):寧可多擋,不要經由連結刪到家目錄或遊戲
+covers() {
+    local a b
+    a=$(realpath -m -- "$1")
+    b=$(realpath -m -- "$2")
+    [ "$a" = "$b" ] || [[ $b == "${a%/}"/* ]]
+}
+
+DEL=()     # 要刪的;只有 del() 會往裡面加
 KEEP=()    # 只印、不刪的
+HOLD=()    # 包著遊戲目錄而先擋下的;選擇連遊戲一起刪才放行
 GAME=      # maple install 下載的遊戲目錄(另外問)
+GAME_REAL= # GAME 實際的位置(GAME 是連結時,rm 只刪得掉連結)
+GD=        # 主設定的遊戲目錄(不論是不是 maple 下載的):包著它的都不刪
 
 keep() { [[ " ${KEEP[*]} " == *" $1 "* ]] || KEEP+=("$1"); }
 
-# 加進刪除清單:不存在的、已經被清單裡的目錄涵蓋的不重複列
+# 加進刪除清單 —— 所有 rm -rf 的唯一入口。不存在的、已被清單裡的目錄涵蓋的不重複列(連結照列:
+# rm 只刪連結本身,不會跟著刪到目錄裡)。會連 / 或家目錄一起刪的一律拒絕;會連遊戲一起刪的先擋下
 del() {
     [ -e "$1" ] || [ -L "$1" ] || return 0
-    [ ${#DEL[@]} -eq 0 ] || ! under "$1" "${DEL[@]}" || return 0
+    [ ${#DEL[@]} -eq 0 ] || [ -L "$1" ] || ! under "$1" "${DEL[@]}" || return 0
+    if covers "$1" / || covers "$1" "$HOME"; then keep "$1(刪了會連家目錄一起刪,不刪)"; return 0; fi
+    if [ -n "$GD" ] && covers "$1" "$GD"; then
+        HOLD+=("$1")
+        keep "$1(裡面有你的遊戲目錄 $GD,不刪)"
+        return 0
+    fi
     DEL+=("$1")
 }
 
@@ -72,15 +96,52 @@ collect() {
     del "$RUNTIME"
 }
 
-# maple install 下載的遊戲目錄(有標記)記進 GAME,另外問;沒標記的只印路徑
+# 主設定的遊戲目錄記進 GD(包著它的都不刪,所以要在 collect 之前跑);
+# maple install 下載的(有標記)記進 GAME 另外問,沒標記的只印路徑
 game_dir() {
     local gd
     [ -f "$MAIN_ENV" ] || return 0
     gd=$(envvar "$MAIN_ENV" GAME_DIR)
     [ -n "$gd" ] && [ -d "$gd" ] || return 0
-    case $(readlink -m "$gd") in /|"$(readlink -m "$HOME")") keep "遊戲目錄 $gd(不刪)"; return 0 ;; esac
+    GD=$gd
+    if covers "$gd" / || covers "$gd" "$HOME"; then keep "遊戲目錄 $gd(不刪)"; return 0; fi
     if [ -f "$gd/.maple-cask-owned" ]; then GAME=$gd
     else keep "遊戲目錄 $gd(不是 maple install 下載的,不刪)"; fi
+}
+
+show() {
+    local p
+    echo "會刪掉:"
+    for p in "${DEL[@]}"; do echo "  $p"; done
+    echo "  beanfun session($SESSION)與保活 timer(maple-keepalive)"
+    command -v secret-tool >/dev/null && echo "  passkey 憑證(Secret Service:service=maple-login account=gamapass)"
+    [ -z "$GAME" ] || echo "遊戲 $GAME 是 maple install 下載的:等一下另外問,預設不刪"
+    if [ ${#KEEP[@]} -gt 0 ]; then
+        echo "不會動:"
+        for p in "${KEEP[@]}"; do echo "  $p"; done
+    fi
+}
+
+# 選擇連遊戲一起刪:解除遊戲目錄的保護,先前因為包著它而擋下的(HOLD)跟遊戲本身一起經 del() 進清單
+ask_game() {
+    local ans p also=
+    [ -n "$GAME" ] || return 0
+    [ ${#HOLD[@]} -eq 0 ] || also="(連同包著它的 ${HOLD[*]})"
+    read -rp "也刪除遊戲 $GAME(約 70GB)$also?[y/N] " ans
+    [[ $ans == [yY]* ]] || { echo "遊戲留著:$GAME"; GAME=; return 0; }
+    GAME_REAL=$(realpath -m -- "$GAME")
+    GD=
+    for p in "${HOLD[@]}" "$GAME"; do del "$p"; done
+}
+
+# 照實講刪了什麼:GAME_DIR 是連結的話,刪掉的只是連結
+report_game() {
+    [ -n "$GAME" ] || return 0
+    if [ -e "$GAME_REAL" ]; then
+        echo "遊戲:$GAME 是連結,只刪了連結;實際的遊戲目錄 $GAME_REAL 還在(要刪就自己 rm -rf)"
+    else
+        echo "遊戲已刪除:$GAME_REAL"
+    fi
 }
 
 # 刪 session 檔與保活 timer:用 maple-login 自己的 forget;它跑不起來(缺 python 套件)就自己來
@@ -103,15 +164,22 @@ leftover() {
     echo "留著:$DATA 裡還有 ${rest% }(不是 maple 下載的,自己決定)"
 }
 
+# git clone:指到這份 clone 的 maple 連結(PATH 上那個,或 README 教的 ~/.local/bin/maple)找得到才叫你刪
 how_to_remove_scripts() {
     local link
-    if [ ! -e "$REPO/.git" ]; then
+    if packaged; then
         echo "腳本本身:sudo apt remove maple-cask(Arch:sudo pacman -R maple-cask)"
         return
     fi
-    link=$(command -v maple 2>/dev/null || true)
-    [ -L "$link" ] && [ "$(readlink -f "$link")" = "$REPO/tools/maple" ] || link=~/.local/bin/maple
-    echo "腳本本身(git clone):rm $link && rm -rf $REPO"
+    for link in "$(command -v maple 2>/dev/null || true)" ~/.local/bin/maple; do
+        [ -L "$link" ] && [ "$(readlink -f "$link")" = "$REPO/tools/maple" ] && break
+        link=
+    done
+    if [ -n "$link" ]; then
+        echo "腳本本身(git clone):rm $(printf %q "$link") && rm -rf $(printf %q "$REPO")"
+    else
+        echo "腳本本身(git clone):rm -rf $(printf %q "$REPO")(自己另外建過指到 $REPO/tools/maple 的連結也刪掉)"
+    fi
     echo "  自己加的 /etc/sysctl.d/99-split-lock.conf、/etc/modules-load.d/ntsync.conf 不用了也可以刪(要 sudo)"
 }
 
@@ -119,31 +187,21 @@ main() {
     local r p ans
     [ -t 0 ] || die "maple uninstall 要在終端機跑(會問確認)"
     "$HERE/maple-update" --busy && die "遊戲或 wineserver 還在跑,先 maple stop(多開的每一組都要)"
+    # 家目錄落在這些目錄裡(例如 MAPLE_DATA=/home):裡面什麼都可能是你的,整個不做
     for r in "$DATA" "$CFG" "$CACHE"; do
-        case $(readlink -m "$r") in /|"$(readlink -m "$HOME")") die "$r 指到 / 或家目錄,不敢刪;檢查 MAPLE_DATA / XDG_*_HOME" ;; esac
+        ! covers "$r" "$HOME" || die "$r 包含家目錄,不敢刪;檢查 MAPLE_DATA / XDG_*_HOME"
     done
-    collect
     game_dir
-    echo "會刪掉:"
-    for p in "${DEL[@]}"; do echo "  $p"; done
-    echo "  beanfun session($SESSION)與保活 timer(maple-keepalive)"
-    command -v secret-tool >/dev/null && echo "  passkey 憑證(Secret Service:service=maple-login account=gamapass)"
-    [ -z "$GAME" ] || echo "遊戲 $GAME 是 maple install 下載的:等一下另外問,預設不刪"
-    if [ ${#KEEP[@]} -gt 0 ]; then
-        echo "不會動:"
-        for p in "${KEEP[@]}"; do echo "  $p"; done
-    fi
+    collect
+    show
     read -rp "確定刪除?[y/N] " ans
     [[ $ans == [yY]* ]] || { echo "沒刪任何東西"; return 0; }
-    if [ -n "$GAME" ]; then
-        read -rp "也刪除遊戲 $GAME(約 70GB)?[y/N] " ans
-        [[ $ans == [yY]* ]] || { echo "遊戲留著:$GAME"; GAME=; }
-    fi
+    ask_game
     forget_session
     forget_passkey
     for p in "${DEL[@]}"; do rm -rf -- "$p"; done
     rmdir "$RUNTIME" 2>/dev/null || true       # forget 會順手建出空的 runtime 目錄
-    [ -z "$GAME" ] || { rm -rf -- "$GAME" && echo "遊戲已刪除:$GAME"; }
+    report_game
     leftover
     echo "完成。"
     how_to_remove_scripts
