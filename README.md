@@ -39,8 +39,11 @@ maple-cask(楓木桶)—— 台版新楓之谷 in Linux。
 三選一。裝好之後都只要打 `maple`:第一次會問遊戲目錄,接著下載 wine runner(校驗 SHA256)、
 沒有遊戲就問要不要下載、建 prefix,然後開遊戲。中途斷了重跑 `maple` 會接著做。
 
-**Ubuntu 24.04+ / Debian 13+(apt)**
+**Ubuntu 25.10+ / Debian 13(apt)**:gamescope 在 Ubuntu 的 multiverse、Debian 的 trixie-backports,winetricks 在 Debian 的 contrib,要先開。
+Ubuntu 24.04 的官方倉庫沒有 gamescope,請用下面的 git clone 並以 `build/build-gamescope.sh` 自己編。
 ```bash
+# Ubuntu:sudo add-apt-repository multiverse
+# Debian:sources 加 contrib,並加 trixie-backports(deb http://deb.debian.org/debian trixie-backports main contrib)
 sudo curl -fsSLo /etc/apt/keyrings/maple-cask.gpg https://dl.qazsskevin.org/apt/maple-cask.gpg
 echo 'deb [signed-by=/etc/apt/keyrings/maple-cask.gpg] https://dl.qazsskevin.org/apt stable main' | sudo tee /etc/apt/sources.list.d/maple-cask.list
 sudo apt update && sudo apt install maple-cask

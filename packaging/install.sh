@@ -19,7 +19,7 @@ LICENSE_DIR=${LICENSE_DIR:-$DOC_DIR}
 
 # 要裝的檔(相對 repo 根,裝到 $SHARE 底下同一個相對路徑)。目錄另外在 list_files 展開
 FILES=(
-    tools/maple tools/maple-game tools/maple-login tools/maple-update
+    tools/maple tools/maple-game tools/maple-login tools/maple-update tools/maple-uninstall
     tools/maple_passkey.py tools/gs-run.sh tools/kill-prefix.sh
     tools/mapletype.c tools/gamefont.c
     run.sh dxvk.conf env.example

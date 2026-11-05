@@ -6,7 +6,7 @@ Priority: optional
 Maintainer: kevin <qazsskevin@gmail.com>
 Installed-Size: @SIZE@
 Homepage: https://github.com/kevin00156/maple-cask
-Depends: gamescope, winetricks, python3, python3-requests, python3-cryptography, locales
+Depends: gamescope, winetricks, curl, xz-utils, procps, python3, python3-requests, python3-cryptography, locales
 Recommends: libsecret-tools, libglib2.0-bin, xvfb
 Suggests: chromium
 Description: MapleStory TW (Taiwan) launcher for Linux
