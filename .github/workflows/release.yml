@@ -142,7 +142,7 @@ jobs:
           [ "$rc" -ne 0 ] || { echo "maple 沒設定檔時應該非零結束"; exit 1; }
           grep -q '沒有設定檔' noenv.out
 
-  # PKGBUILD 用工作樹打的 tarball 走一次 makepkg → pacman -U,驗 package() 與 depends
+  # repo 裡的 PKGBUILD 就是從本地 checkout 打包(README 的 Arch 裝法):照使用者的做法跑一次 makepkg → pacman -U
   smoke-arch:
     runs-on: ubuntu-24.04
     container: archlinux:latest
@@ -152,31 +152,20 @@ jobs:
 
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 0   # PKGBUILD 用 git describe --tags 推版本
 
-      # makepkg 不能用 root 跑;工作目錄交給一般使用者
+      # makepkg 不能用 root 跑;checkout 交給一般使用者(擁有者相同,git 就不擋 safe.directory)
       - name: 建使用者
         run: |
           useradd -m builder
           chown -R builder: "$GITHUB_WORKSPACE"
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
-      # source 的檔名是 $pkgname-$pkgver.tar.gz:同名檔已在 PKGBUILD 旁邊,makepkg 就不去下載。
-      # pkgver 換成這次的版本(repo 裡的 PKGBUILD 是上一版的);sha256 對的是 GitHub 的 tag tarball,
-      # 這份是自己打的,所以 --skipchecksums。-d:runtime depends 交給下面的 pacman -U 從官方庫裝,順便驗套件名
-      - name: makepkg(本地 tarball)
-        run: |
-          if [[ $GITHUB_REF == refs/tags/v* ]]; then tag=$GITHUB_REF_NAME; else tag=$(git describe --tags --abbrev=0); fi
-          ver=${tag#v}
-          mkdir /tmp/pkg
-          sed "s/^pkgver=.*/pkgver=$ver/" packaging/arch/PKGBUILD > /tmp/pkg/PKGBUILD
-          cp packaging/arch/maple-cask.install /tmp/pkg/
-          git archive --format=tar.gz --prefix="maple-cask-$ver/" -o "/tmp/pkg/maple-cask-$ver.tar.gz" HEAD
-          chown -R builder: /tmp/pkg
-          su builder -c 'cd /tmp/pkg && makepkg -d --skipchecksums --noconfirm'
+      # -d:runtime depends 交給下面的 pacman -U 從官方庫裝,順便驗套件名
+      - name: makepkg(本地 checkout)
+        run: su builder -c 'cd packaging/arch && makepkg -d --noconfirm'
 
       - name: pacman -U
-        run: pacman -U --noconfirm /tmp/pkg/maple-cask-*-any.pkg.tar.zst
+        run: pacman -U --noconfirm packaging/arch/maple-cask-*-any.pkg.tar.zst
 
       - name: maple help
         run: |
@@ -271,7 +260,7 @@ jobs:
           cd back && sha256sum -c ../sums
           echo "apt repo:https://dl.qazsskevin.org/apt/"
 
-  # AUR 目前暫停註冊,沒有帳號可推:先產出更新好的 PKGBUILD 與 .SRCINFO 當 artifact,人工拿去用。
+  # AUR 目前暫停註冊,沒有帳號可推:先產出 AUR 用的 PKGBUILD 與 .SRCINFO(tag tarball + sha256)當 artifact,人工拿去用。
   # AUR 帳號開放後:加 secret AUR_SSH_KEY,這個 job 改成 clone ssh://aur@aur.archlinux.org/maple-cask.git、
   # 放進這兩個檔、commit 推上去。
   aur:
@@ -290,14 +279,12 @@ jobs:
         run: |
           useradd -m builder
           chown -R builder: "$GITHUB_WORKSPACE"
-          su builder -c "packaging/arch/update-pkgbuild.sh $GITHUB_REF_NAME"
-          cat packaging/arch/.SRCINFO
+          mkdir /tmp/aur && chown builder: /tmp/aur
+          su builder -c "packaging/arch/update-pkgbuild.sh $GITHUB_REF_NAME /tmp/aur"
+          cat /tmp/aur/.SRCINFO
 
       - uses: actions/upload-artifact@v4
         with:
           name: aur-maple-cask
           include-hidden-files: true   # .SRCINFO 是點開頭的檔
-          path: |
-            packaging/arch/PKGBUILD
-            packaging/arch/.SRCINFO
-            packaging/arch/maple-cask.install
+          path: /tmp/aur/
