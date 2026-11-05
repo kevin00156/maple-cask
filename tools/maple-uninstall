@@ -1,0 +1,149 @@
+#!/bin/bash
+# maple-uninstall — 把 maple 在這台機器上產生的東西刪掉。經 `maple uninstall` 呼叫,要在終端機跑。
+#   刪:runner、prefix、多開組(連同它們的遊戲目錄)、synced-version、cmsdl、設定目錄、快取目錄、
+#       beanfun session(連同保活 timer)、passkey 憑證(Secret Service 裡 service=maple-login account=gamapass)
+#   先全部列出來,確認了才刪。遊戲或任何一組的 wineserver 在跑就不做。
+#   只刪位在 $MAPLE_DATA / 設定 / 快取目錄底下的路徑:env.sh 裡指到別處的 WINEPREFIX、WINE_ROOT 只印出來,
+#   不碰(WINEPREFIX=$HOME 這種設定照刪的話就是災難)。
+#   遊戲目錄:maple install 下載的(有 .maple-cask-owned)才另外問,預設不刪;其餘只印路徑。
+#   腳本本身不刪:最後印出怎麼移除套件 / git clone。
+set -euo pipefail
+HERE=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
+REPO=$(dirname "$HERE")
+CFG=${XDG_CONFIG_HOME:-$HOME/.config}/maplestory-tw
+MAIN_ENV=${MAPLE_ENV:-$CFG/env.sh}
+DATA=${MAPLE_DATA:-${XDG_DATA_HOME:-$HOME/.local/share}/maplestory-tw}
+CACHE=${XDG_CACHE_HOME:-$HOME/.cache}/maplestory-tw
+RUNTIME=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/maplestory-tw
+SESSION=${MAPLE_SESSION_FILE:-$RUNTIME/session.json}
+
+die() { echo "$*" >&2; exit 1; }
+
+# 在乾淨環境裡 source 一份 env,印出某個變數(同 maple-update)
+# shellcheck disable=SC2016  # 單引號是故意的:$1/$2 要由內層 bash -c 展開
+envvar() { env -u WINE_ROOT -u WINEPREFIX -u GAME_DIR bash -c 'source "$1" >/dev/null && printf %s "${!2:-}"' _ "$1" "$2"; }
+
+# $1 在 $2… 其中一個目錄的底下(不含目錄本身)
+under() {
+    local p r
+    p=$(readlink -m "$1")
+    shift
+    for r in "$@"; do [[ $p == "$(readlink -m "$r")"/* ]] && return 0; done
+    return 1
+}
+
+DEL=()     # 要刪的
+KEEP=()    # 只印、不刪的
+GAME=      # maple install 下載的遊戲目錄(另外問)
+
+keep() { [[ " ${KEEP[*]} " == *" $1 "* ]] || KEEP+=("$1"); }
+
+# 加進刪除清單:不存在的、已經被清單裡的目錄涵蓋的不重複列
+del() {
+    [ -e "$1" ] || [ -L "$1" ] || return 0
+    [ ${#DEL[@]} -eq 0 ] || ! under "$1" "${DEL[@]}" || return 0
+    DEL+=("$1")
+}
+
+# env.sh 裡的 WINEPREFIX / WINE_ROOT:在 maple 自己的目錄底下才刪,其餘只印
+collect_env() {
+    local f=$1 pfx root
+    pfx=$(envvar "$f" WINEPREFIX)
+    root=$(envvar "$f" WINE_ROOT)
+    if [ -n "$pfx" ]; then
+        if under "$pfx" "$DATA" "$CFG" "$CACHE"; then del "$pfx"
+        else keep "WINEPREFIX=$pfx(自訂的位置,不刪)"; fi
+    fi
+    # runners/ 底下的整個刪;其他(自己 build 的 build/out 等)是你的
+    if [ -n "$root" ] && ! under "$root" "$DATA/runners"; then
+        keep "WINE_ROOT=$root(自訂的 runner,不刪)"
+    fi
+}
+
+collect() {
+    local f
+    del "$DATA/runners"
+    del "$DATA/instances"           # 多開組:prefix + 從主目錄分出來的遊戲目錄
+    for f in "$MAIN_ENV" "$CFG"/env-[2-9].sh; do [ -f "$f" ] && collect_env "$f"; done
+    del "$DATA/synced-version"
+    del "$DATA/cmsdl"
+    del "$CFG"
+    del "$CACHE"
+    del "$RUNTIME"
+}
+
+# maple install 下載的遊戲目錄(有標記)記進 GAME,另外問;沒標記的只印路徑
+game_dir() {
+    local gd
+    [ -f "$MAIN_ENV" ] || return 0
+    gd=$(envvar "$MAIN_ENV" GAME_DIR)
+    [ -n "$gd" ] && [ -d "$gd" ] || return 0
+    case $(readlink -m "$gd") in /|"$(readlink -m "$HOME")") keep "遊戲目錄 $gd(不刪)"; return 0 ;; esac
+    if [ -f "$gd/.maple-cask-owned" ]; then GAME=$gd
+    else keep "遊戲目錄 $gd(不是 maple install 下載的,不刪)"; fi
+}
+
+# 刪 session 檔與保活 timer:用 maple-login 自己的 forget;它跑不起來(缺 python 套件)就自己來
+forget_session() {
+    "$HERE/maple-login" forget && return 0
+    echo "⚠ maple-login forget 沒跑成;保活 timer 自己停:systemctl --user disable --now maple-keepalive.timer" >&2
+}
+
+forget_passkey() {
+    command -v secret-tool >/dev/null || return 0
+    secret-tool clear service maple-login account gamapass ||
+        echo "⚠ passkey 憑證沒刪成(keyring 鎖著?);之後自己:secret-tool clear service maple-login account gamapass" >&2
+}
+
+leftover() {
+    local rest
+    [ -d "$DATA" ] || return 0
+    rmdir "$DATA" 2>/dev/null && return 0
+    rest=$(find "$DATA" -mindepth 1 -maxdepth 1 -printf '%f ')
+    echo "留著:$DATA 裡還有 $rest(不是 maple 下載的,自己決定)"
+}
+
+how_to_remove_scripts() {
+    local link
+    if [ ! -e "$REPO/.git" ]; then
+        echo "腳本本身:sudo apt remove maple-cask(Arch:sudo pacman -R maple-cask)"
+        return
+    fi
+    link=$(command -v maple 2>/dev/null || true)
+    [ -L "$link" ] && [ "$(readlink -f "$link")" = "$REPO/tools/maple" ] || link=~/.local/bin/maple
+    echo "腳本本身(git clone):rm $link && rm -rf $REPO"
+    echo "  自己加的 /etc/sysctl.d/99-split-lock.conf、/etc/modules-load.d/ntsync.conf 不用了也可以刪(要 sudo)"
+}
+
+main() {
+    local r p ans
+    [ -t 0 ] || die "maple uninstall 要在終端機跑(會問確認)"
+    "$HERE/maple-update" --busy && die "遊戲或 wineserver 還在跑,先 maple stop(多開的每一組都要)"
+    for r in "$DATA" "$CFG" "$CACHE"; do
+        case $(readlink -m "$r") in /|"$(readlink -m "$HOME")") die "$r 指到 / 或家目錄,不敢刪;檢查 MAPLE_DATA / XDG_*_HOME" ;; esac
+    done
+    collect
+    game_dir
+    echo "會刪掉:"
+    for p in "${DEL[@]}"; do echo "  $p"; done
+    echo "  beanfun session($SESSION)與保活 timer(maple-keepalive)"
+    command -v secret-tool >/dev/null && echo "  passkey 憑證(Secret Service:service=maple-login account=gamapass)"
+    if [ ${#KEEP[@]} -gt 0 ]; then
+        echo "不會動:"
+        for p in "${KEEP[@]}"; do echo "  $p"; done
+    fi
+    read -rp "確定刪除?[y/N] " ans
+    [[ $ans == [yY]* ]] || { echo "沒刪任何東西"; return 0; }
+    if [ -n "$GAME" ]; then
+        read -rp "也刪除遊戲 $GAME(約 70GB)?[y/N] " ans
+        [[ $ans == [yY]* ]] || { echo "遊戲留著:$GAME"; GAME=; }
+    fi
+    forget_session
+    forget_passkey
+    for p in "${DEL[@]}"; do rm -rf -- "$p"; done
+    [ -z "$GAME" ] || { rm -rf -- "$GAME" && echo "遊戲已刪除:$GAME"; }
+    leftover
+    echo "完成。"
+    how_to_remove_scripts
+}
+main "$@"
