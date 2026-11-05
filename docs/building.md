@@ -52,12 +52,14 @@ build 完連同 `SHA256SUMS` 掛到該版的 Release。在 Actions 頁手動 Run
 ## 檔案放哪
 repo 只放腳本、patch、文件;大檔預設在 `~/.local/share/maplestory-tw/`(可用 `MAPLE_DATA` 改):
 ```
-~/.local/share/maplestory-tw/runners/     maple update 下載的 runner:current → 在用的版本,previous → 上一版(--rollback 用)
+~/.local/share/maplestory-tw/runners/     maple update 下載的 runner(跟腳本同版的 Release):current → 在用的版本,previous → 上一版(--rollback 用)
+~/.local/share/maplestory-tw/synced-version  runner / prefix 最後一次同步到的腳本版本;跟腳本版本不同時 maple 會問要不要同步
 ~/.local/share/maplestory-tw/build/       build/build-wine.sh 的 build 目錄(out/ = wine runner)
 ~/.local/share/maplestory-tw/gamescope/   build/build-gamescope.sh 的安裝目錄
 ~/.local/share/maplestory-tw/instances/   多開的第 2~9 組(maple -N setup)
 ~/.local/share/maplestory-tw/cmsdl/       maple update 下載的 cmsdl(版本見 build/CMSDL_VERSION),下載 / 更新遊戲用
-~/.config/maplestory-tw/env.sh            WINE_ROOT / WINEPREFIX / GAME_DIR / FONTS_DIR(從 env.example 複製)
+~/.config/maplestory-tw/env.sh            WINE_ROOT / WINEPREFIX / GAME_DIR / FONTS_DIR(第一次 maple 從 env.example 產生)
+$GAME_DIR/.maple-cask-owned               這份遊戲是 maple install 下載的(maple uninstall 才會問要不要刪)
 ~/.cache/maplestory-tw/                   每次開遊戲的 log
 $XDG_RUNTIME_DIR/maplestory-tw/           beanfun session(tmpfs,重開機就消失 —— 刻意的)
 ```

@@ -13,9 +13,8 @@ maple-cask(楓木桶)—— 台版新楓之谷 in Linux。
 
 ## 需求
 - Linux x86_64,有 Vulkan 的 GPU 驅動(實測 NVIDIA;AMD / Intel 未測)
-- `gamescope`、`winetricks`、`mingw-w64`、Python 3 的 `requests` 與 `cryptography`,以及 `zh_TW.UTF-8` locale。Ubuntu:
+- `zh_TW.UTF-8` locale。Ubuntu:
   ```bash
-  sudo apt install gamescope winetricks mingw-w64 python3-requests python3-cryptography
   sudo locale-gen zh_TW.UTF-8
   ```
   Arch / CachyOS 等 Arch 系的 `locale-gen` 不吃參數(照上面打會「成功」但什麼都沒生),要先在 `/etc/locale.gen` 打開那一行:
@@ -23,7 +22,7 @@ maple-cask(楓木桶)—— 台版新楓之谷 in Linux。
   sudo sed -i 's/^#zh_TW.UTF-8 UTF-8/zh_TW.UTF-8 UTF-8/' /etc/locale.gen && sudo locale-gen
   locale -a | grep -i zh_TW     # 有 zh_TW.utf8 才算數
   ```
-- 遊戲本體(約 70GB):已經有現成的目錄就把 `GAME_DIR` 指過去;沒有的話裝好後 `maple install` 會用
+- 遊戲本體(約 70GB):已經有現成的目錄,第一次開 `maple` 時告訴它路徑;沒有的話 `maple` 會問要不要用
   [cmsdl](https://github.com/HikariCalyx/cmsdl) 從橘子的 CDN 下載(中斷了重跑會接著下)
 - 一支 beanfun 手機 App（QR 登入與 passkey 註冊時的備用驗證）
 - 選用 passkey 自動重登：Chromium 系瀏覽器、`secret-tool` 與 `gdbus`（Ubuntu：`sudo apt install libsecret-tools libglib2.0-bin`）與已解鎖的 Secret Service/KWallet。`Xvfb` 選用（`sudo apt install xvfb`）；沒有就開可見視窗。不需要 `websocket-client`，缺少 passkey 依賴仍可 QR。
@@ -37,27 +36,38 @@ maple-cask(楓木桶)—— 台版新楓之谷 in Linux。
 - 選用:一份 Windows 的 `C:\Windows\Fonts`(至少 `mingliu.ttc`),沒有的話字會糊
 
 ## 安裝
+三選一。裝好之後都只要打 `maple`:第一次會問遊戲目錄,接著下載 wine runner(校驗 SHA256)、
+沒有遊戲就問要不要下載、建 prefix,然後開遊戲。中途斷了重跑 `maple` 會接著做。
+
+**Ubuntu 24.04+ / Debian 13+(apt)**
+```bash
+sudo curl -fsSLo /etc/apt/keyrings/maple-cask.gpg https://dl.qazsskevin.org/apt/maple-cask.gpg
+echo 'deb [signed-by=/etc/apt/keyrings/maple-cask.gpg] https://dl.qazsskevin.org/apt stable main' | sudo tee /etc/apt/sources.list.d/maple-cask.list
+sudo apt update && sudo apt install maple-cask
+```
+
+**Arch / CachyOS**:AUR 還在註冊中,先自己打包:
+```bash
+git clone https://github.com/kevin00156/maple-cask.git && cd maple-cask/packaging/arch && makepkg -si
+```
+兩種套件都會一併裝好依賴,以及下面 git clone 第 2、3 步的系統設定(split lock、ntsync)。
+
+**git clone**(開發者、自己編 wine)
 ```bash
 git clone https://github.com/kevin00156/maple-cask.git && cd maple-cask
+sudo apt install gamescope winetricks mingw-w64 python3-requests python3-cryptography   # Arch 系換成對應的套件
 
-# 1. 設路徑:填 GAME_DIR(必填;還沒有遊戲就填想放的位置,第 3 步後 maple install)、FONTS_DIR;
-#    WINE_ROOT 保持預設 = 交給 maple update 管
-mkdir -p ~/.config/maplestory-tw
-cp env.example ~/.config/maplestory-tw/env.sh && ${EDITOR:-nano} ~/.config/maplestory-tw/env.sh
-
-# 2. 下載 wine runner(Releases 最新版,校驗 SHA256)並建 prefix
-tools/maple update
-
-# 3. 把 maple 放進 PATH
+# 1. 把 maple 放進 PATH
 mkdir -p ~/.local/bin && ln -sf "$PWD/tools/maple" ~/.local/bin/maple
 command -v maple || echo '~/.local/bin 不在 PATH:bash 在 ~/.bashrc 加 export PATH="$HOME/.local/bin:$PATH";fish 跑 fish_add_path ~/.local/bin'
 
-# 4. 關掉 kernel 對 split lock 的罰睡 —— 不關的話反作弊會讓遊戲主執行緒每秒被睡 30 多次、每次 10ms(間歇卡頓)
+# 2. 關掉 kernel 對 split lock 的罰睡 —— 不關的話反作弊會讓遊戲主執行緒每秒被睡 30 多次、每次 10ms(間歇卡頓)
 echo 'kernel.split_lock_mitigate = 0' | sudo tee /etc/sysctl.d/99-split-lock.conf && sudo sysctl --system
 
-# 5. (kernel 6.14 起)開機自動載入 ntsync —— 遊戲的同步呼叫不必全擠在單執行緒的 wineserver;沒有也能玩
+# 3. (kernel 6.14 起)開機自動載入 ntsync —— 遊戲的同步呼叫不必全擠在單執行緒的 wineserver;沒有也能玩
 echo ntsync | sudo tee /etc/modules-load.d/ntsync.conf && sudo modprobe ntsync
 ```
+設定檔在 `~/.config/maplestory-tw/env.sh`(第一次 `maple` 從 `env.example` 產生);`FONTS_DIR` 等選用項目在裡面改。
 想自己編 wine,或要看得到中文輸入法的候選窗:[docs/building.md](docs/building.md)。
 
 ## 使用
@@ -68,8 +78,8 @@ maple stop                # 關遊戲
 maple help                # 全部指令
 ```
 - 請一律用 `maple`(經 gamescope)開遊戲,不要直接跑 wine —— 不經 gamescope 常常連不上登入伺服器。
-- `maple` 說「prefix 沒建完」(或 log 裡有 `dxgi.dll ... not found`):`maple update` 的 setup 中途失敗過,
-  或在 `maple update` 之前就先開過遊戲(wine 自己建了沒有 DXVK 的空 prefix)。修好原因後跑 `maple setup`,不用自己去抓 DXVK。
+- `maple` 說「prefix 沒建完」(或 log 裡有 `dxgi.dll ... not found`):在終端機跑 `maple` 會自動補跑 setup;
+  setup 本身失敗的話,修好原因後跑 `maple setup`,不用自己去抓 DXVK。
 - 遊戲更新:`maple` 開遊戲前會查,有新版就先用 cmsdl 更新再開(比遊戲自己的 Patcher.exe 快很多)。
   有任何一組還在跑、或查不到時就照開,由 Patcher.exe 接手。
 - 多開:`maple -2 setup` 一次,之後 `maple -2`(`-2`~`-9`)。主目錄更新過,`maple -N` 會自動重建那組的遊戲目錄。
@@ -78,14 +88,31 @@ maple help                # 全部指令
 - 用 Lutris / Heroic:執行檔設成 `tools/gs-run.sh`(不是 wine 本身),環境變數照 `env.sh` 填。
 
 ## 更新
-`maple` 開遊戲前一天查一次有沒有新 Release,有的話會問要不要先更新(預設不更新)。之後要自己更新:
+runner 跟著腳本的版本走(每一版腳本都有同版的 runner)。腳本換了版,下次 `maple` 會問要不要把 runner 與 prefix
+同步過去(預設要)。
+- 套件安裝:腳本跟著 `sudo apt upgrade` / `sudo pacman -Syu` 更新。
+- git clone:`maple` 開遊戲前一天查一次有沒有新 Release,有的話會問要不要先更新(預設不更新)。
+
+要自己更新:
 ```bash
-maple stop && maple update    # 腳本 git 快轉、下載新 runner、每一組 prefix 重跑 setup
-maple update --rollback       # 新 runner 有問題:退回上一版(只留一版)
+maple stop && maple update    # git clone 的腳本 git 快轉;runner 換成同版;每一組 prefix 重跑 setup(套件安裝只做後兩件)
+maple update --rollback       # 新 runner 有問題:退回上一版(只留一版);之後開遊戲不會再問要不要同步回去
 ```
 - 腳本只有在你沒改過追蹤中的檔案時才更新;runner 只有在 `WINE_ROOT` 是預設的 `runners/current` 時才更新。
   不符合的那一項會跳過並說明原因,不會動你自己的東西。
-- 腳本要一起退版:`git checkout v0.0.1`(換成要的版本);回來用 `git checkout main && maple update`。
+- git clone 的腳本要一起退版:`git checkout v0.0.1`(換成要的版本);回來用 `git checkout main && maple update`。
+
+## 解除安裝
+```bash
+maple uninstall    # 先列出要刪的再確認:runner、prefix、多開、設定、快取、beanfun session、passkey
+```
+`maple` 下載的遊戲會另外問(預設不刪);自己放的遊戲目錄、`env.sh` 裡指到別處的 `WINEPREFIX` / `WINE_ROOT`
+只印路徑,不動。最後移除腳本本身:`sudo apt remove maple-cask` / `sudo pacman -R maple-cask`;
+git clone 則 `rm ~/.local/bin/maple` 並刪掉 clone 目錄。
+
+## 從 git clone 換成套件
+裝好套件後 `rm ~/.local/bin/maple` 就好(不刪的話 PATH 上的 clone 會蓋過套件版,`maple` 會提示)。
+設定、runner、prefix、遊戲都沿用;clone 目錄不用了可以刪。
 
 遇到問題先看 [docs/known-issues.md](docs/known-issues.md)。
 
