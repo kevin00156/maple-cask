@@ -691,11 +691,11 @@ def build_mapletype() -> str | None:
     """mapletype.exe 不進 git(二進位):沒有、或比 .c 舊(git pull 過),就當場編。
 
     建置指令只有一份,在 mapletype.c 檔頭(build-wine.sh、setup-prefix.sh 也是這樣撈)。
-    編不成但手上有舊的 exe 就照用;連舊的都沒有才回一段話。套件安裝(沒有 .git)一律不編。
+    編不成但手上有舊的 exe 就照用;連舊的都沒有才回一段話。套件安裝(有 install.sh 放的 VERSION)一律不編。
     """
     src = MAPLETYPE[:-len(".exe")] + ".c"
     have = os.path.exists(MAPLETYPE)
-    if not os.path.exists(os.path.join(HERE, "..", ".git")):
+    if os.path.isfile(os.path.join(HERE, "..", "VERSION")):
         # 套件安裝:預先編好、目錄唯讀,不編也不寫。不見了就是套件壞了,不要叫人裝 mingw
         return None if have else (
             f"沒有 {MAPLETYPE}:套件裝壞了,請重裝套件\n"
