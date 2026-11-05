@@ -1,5 +1,5 @@
 #!/bin/bash
-# maple — 一個指令從開遊戲到登入。裝法:ln -sf "$PWD/tools/maple" ~/.local/bin/maple
+# maple — 一個指令從開遊戲到登入。git clone 的裝法:ln -sf "$PWD/tools/maple" ~/.local/bin/maple(套件已裝好 /usr/bin/maple)
 #   maple            開遊戲(gamescope)→ 等登入表單出現、鑄 OTP 打進去
 #   maple game       只開遊戲
 #   maple login      只鑄 OTP 打進去(遊戲要已開、停在登入表單)
@@ -7,13 +7,21 @@
 #   maple status     遊戲 / wineserver 在不在
 #   maple qr         強制重掃 QR(= maple-login login --qr)
 #   maple session    session 還活著嗎(= maple-login status)
-#   maple update     更新腳本 + runner 到最新 Release(--rollback 退 runner;不分組別,一次全部)
+#   maple update     更新腳本到最新 Release,runner + prefix 同步到腳本版本(--rollback 退 runner;不分組別,一次全部)
+#                    套件安裝的腳本由 apt / pacman 更新,這裡只同步 runner + prefix
 #   maple setup      重跑 prefix/setup-prefix.sh(prefix 沒建完、或 update 時 setup 失敗,修好原因後用這個補)
 #   maple install    下載整份遊戲(約 70GB)到 env.sh 的 GAME_DIR(用 cmsdl;中斷了重跑會接著下)
+#   maple uninstall  刪掉 runner、prefix、多開、設定、快取、beanfun session、passkey(會先列出來問;遊戲另外問)
 #   其他一律原樣轉給 maple-login:maple otp / forget / keepalive / --name … 都照舊能用
 #
-# 開遊戲前:遊戲有新版就先用 cmsdl 更新(tools/maple-game;失敗就照開,遊戲會自己叫 Patcher.exe)。
-# 腳本 / runner 有新版(一天真的連網查一次)就問要不要先更新,預設不更新(回 N 當天不再問);不在終端機或有遊戲在跑就只印一行。
+# 開遊戲前依序檢查,缺什麼補什麼(每步都可以中斷重跑,會接著做):
+#   1. 沒有設定檔 → 問遊戲目錄,從 env.example 產生
+#   2. (git clone)腳本有新 Release(一天真的連網查一次)→ 問要不要先更新,預設不更新(回 N 當天不再問)
+#   3. runner / prefix 還沒同步到腳本版本(套件升級了、git pull 過、第一次用)→ 問要不要同步,預設同步
+#   4. 遊戲有新版就先用 cmsdl 更新(tools/maple-game;失敗就照開,遊戲會自己叫 Patcher.exe)
+#   5. GAME_DIR 沒有遊戲 → 問要不要下載(約 70GB)
+#   6. prefix 沒建完 → 跑 setup
+# 不在終端機就不問:印出缺什麼、該跑哪個指令,exit 1(第 2 步與有遊戲在跑時只印一行,照開)。
 #
 # 多開:前面加 -2 ~ -9 就是第 N 組,其餘用法完全一樣
 #   maple -2 setup   建第 2 組(一次就好):遊戲目錄 Data/ hardlink、其餘複製(約 600MB),寫 env-2.sh,建 prefix;
@@ -24,16 +32,61 @@
 # 設定檔:$MAPLE_ENV(預設 ~/.config/maplestory-tw/env.sh,從 env.example 複製;第 N 組是 env-N.sh),不用 source。
 set -euo pipefail
 HERE=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)     # 經 ~/.local/bin 的 symlink 也找得到 repo
+REPO=$(dirname "$HERE")
 CFG=${XDG_CONFIG_HOME:-$HOME/.config}/maplestory-tw
 
-# update / install 在載入 env 之前:第一次安裝時 WINE_ROOT 指的 runner 還不存在
-if [ "${1:-}" = update ]; then shift; exec "$HERE/maple-update" "$@"; fi
-if [ "${1:-}" = install ]; then exec "$HERE/maple-game" install; fi
+# 套件安裝:整份腳本在唯讀的 /usr/share/maple-cask,沒有 .git
+packaged() { [ ! -e "$REPO/.git" ]; }
 
-# 開遊戲前問要不要先 maple update。update 會 git 快轉換掉這支檔案,bash 不能接著讀 → 更新完 exec 從頭重跑
+# 套件版與 git clone 版同時在:PATH 上的 maple 不是自己就提示一行,不擋
+coexist() {
+    local me link other fix
+    me=$(readlink -f "$0")
+    link=$(command -v maple 2>/dev/null || true)
+    other=${link:+$(readlink -f "$link")}
+    fix="rm $link(資料沿用)"
+    [ -L "$link" ] || fix="把 $link 從 PATH 拿掉"
+    if [ -n "$other" ] && [ "$other" != "$me" ]; then
+        if packaged; then echo "注意:PATH 上的 maple 是 $other,不是這份套件版;要改用套件版:$fix" >&2
+        else echo "注意:PATH 上的 maple 是 $other,不是這份 git clone($me)" >&2; fi
+    elif ! packaged && [ -e /usr/bin/maple ] && [ "$(readlink -f /usr/bin/maple)" != "$me" ]; then
+        echo "注意:系統也裝了套件版 maple,PATH 上這份 git clone 蓋過了它;要改用套件版:$fix" >&2
+    fi
+}
+coexist
+
+# 1. 第一次用:沒有設定檔就問遊戲目錄,由 env.example 產生(只換 GAME_DIR)。寫進 .tmp 再改名,中斷不會留半份
+ensure_env() {
+    local envf=${MAPLE_ENV:-$CFG/env.sh} dir line=
+    if [ -n "${WINE_ROOT:-}" ] || [ -f "$envf" ]; then return 0; fi
+    if [ ! -t 0 ]; then
+        echo "沒有設定檔 $envf。在終端機跑 maple 會問遊戲目錄並產生;或自己 cp $REPO/env.example $envf 再改 GAME_DIR" >&2
+        exit 1
+    fi
+    read -rp "已經有遊戲目錄嗎?輸入路徑,或 Enter 下載到 ~/Games/MapleStory:" dir
+    if [ -n "$dir" ]; then
+        dir=$(realpath -m -- "${dir/#\~/$HOME}")
+        [ -f "$dir/MapleStory.exe" ] || echo "注意:$dir 裡沒有 MapleStory.exe;等一下會問要不要下載到那裡"
+        line="export GAME_DIR=$(printf %q "$dir")"
+    fi
+    mkdir -p "$(dirname "$envf")"
+    LINE=$line awk 'ENVIRON["LINE"] != "" && /^export GAME_DIR=/ {print ENVIRON["LINE"]; next} {print}' \
+        "$REPO/env.example" >"$envf.tmp"
+    mv "$envf.tmp" "$envf"
+    echo "設定檔 → $envf(FONTS_DIR 選用:有一份 Windows 字型就在裡面設,中文才不會糊)"
+}
+
+# update / install / uninstall 在載入 env 之前:第一次安裝時 WINE_ROOT 指的 runner 還不存在
+if [ "${1:-}" = update ]; then shift; [ $# -gt 0 ] || ensure_env; exec "$HERE/maple-update" "$@"; fi
+if [ "${1:-}" = install ]; then ensure_env; exec "$HERE/maple-game" install; fi
+if [ "${1:-}" = uninstall ]; then exec "$HERE/maple-uninstall"; fi
+case ${1:-} in -h|--help|help) awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "$0"; exit ;; esac
+
+# 2. 開遊戲前問要不要先 maple update。update 會 git 快轉換掉這支檔案,bash 不能接著讀 → 更新完 exec 從頭重跑。
+#    套件安裝的新版交給 apt / pacman,不問
 offer_update() {
     local msg ans declined=${XDG_CACHE_HOME:-$HOME/.cache}/maplestory-tw/update-declined
-    [ -z "${MAPLE_OFFERED:-}" ] || return 0
+    [ -z "${MAPLE_OFFERED:-}" ] && ! packaged || return 0
     msg=$("$HERE/maple-update" --check 2>/dev/null) || return 0      # 沒網路就安靜跳過
     [ -n "$msg" ] || return 0
     echo "$msg"
@@ -45,8 +98,27 @@ offer_update() {
     "$HERE/maple-update" && MAPLE_OFFERED=1 exec "$0" "$@"
     echo "⚠ 更新沒做完,照舊開遊戲" >&2
 }
+
+# 3. runner / prefix 還沒同步到腳本版本:問,預設同步。rollback 過的不會問(它把那一版記成已同步)
+ensure_synced() {
+    local msg ans
+    msg=$("$HERE/maple-update" --synced) && return 0
+    [ -n "$msg" ] || return 0
+    # 同步要重跑每一組的 setup,有任何一組在跑就做不了 → 只提示
+    if "$HERE/maple-update" --busy; then echo "⚠ $msg:有一組還在跑,全部關掉後 maple update" >&2; return 0; fi
+    [ -t 0 ] || { echo "$msg:maple update(先關遊戲)" >&2; exit 1; }
+    read -rp "$msg?[Y/n] " ans
+    [[ $ans != [nN]* ]] || return 0
+    "$HERE/maple-update" --sync || echo "⚠ 同步沒做完,照舊往下;重跑 maple 會再問" >&2
+}
+
 a=${1:-}; [[ $a =~ ^-[2-9]$ ]] && a=${2:-}
-case $a in ""|game) offer_update "$@" ;; esac
+case $a in
+    ""|game)
+        [[ ${1:-} =~ ^-[2-9]$ ]] || ensure_env       # 多開組沿用主設定,沒建過下面會說
+        offer_update "$@"
+        ensure_synced ;;
+esac
 
 # 建第 N 組:從主設定的遊戲目錄分出一份,prefix 全新
 setup_instance() {
@@ -98,13 +170,34 @@ game_running() { ours -f 'MapleStory\.exe'; }
 ws_running()   { ours -x wineserver; }
 
 
+# 5. 沒有遊戲:問要不要下載。只有主設定會問(maple install 下載到主設定的 GAME_DIR;多開組是從主目錄分出來的)
+ensure_game() {
+    local ans
+    [ ! -f "$GAME_DIR/MapleStory.exe" ] || return 0
+    if [ -z "${MAPLE_INSTANCE:-}" ] && [ -t 0 ]; then
+        read -rp "$GAME_DIR 裡沒有遊戲。現在下載(約 70GB,中斷了重跑 maple 會接著下)?[y/N] " ans
+        if [[ $ans == [yY]* ]]; then "$HERE/maple-game" install; return; fi
+    fi
+    echo "$GAME_DIR 裡沒有 MapleStory.exe。已經有遊戲:改 env.sh 的 GAME_DIR 指過去;沒有:maple install 下載" >&2
+    return 1
+}
+
+# 6. setup 沒跑完(中途失敗、遊戲剛下載完、或 maple update 之前就先開過遊戲,wine 自己建了空 prefix)遊戲起不來
+#    —— 現在補,不要等登入表單 240 秒。不在終端機就只講缺什麼(--check 會印怎麼補)
+ensure_prefix() {
+    "$HERE/../prefix/setup-prefix.sh" --check && return 0
+    [ -t 0 ] || return 1
+    [ -x "$WINE_ROOT/bin/wine" ] ||
+        { echo "沒有 $WINE_ROOT/bin/wine:先 maple update 下載 runner(WINE_ROOT 自己管的話檢查路徑)" >&2; return 1; }
+    echo "== 自動跑 setup"
+    "$HERE/../prefix/setup-prefix.sh"
+}
+
 cmd_game() {
     if game_running; then echo "遊戲已經在跑,不重開"; return 0; fi
     "$HERE/maple-game" sync || echo "⚠ 遊戲更新檢查出錯,照開" >&2
-    [ -f "$GAME_DIR/MapleStory.exe" ] || {
-        echo "$GAME_DIR 裡沒有 MapleStory.exe。已經有遊戲:改 env.sh 的 GAME_DIR 指過去;沒有:maple install 下載" >&2; return 1; }
-    # setup 沒跑完(中途失敗、或 maple update 之前就先開過遊戲,wine 自己建了空 prefix)遊戲起不來 —— 現在講,不要等登入表單 240 秒
-    "$HERE/../prefix/setup-prefix.sh" --check
+    ensure_game || return 1
+    ensure_prefix || return 1
     if ws_running; then
         echo "wineserver 還活著但沒遊戲 → 先殺,不然 explorer 的 desktop 留在錯的 display"
         "$HERE/kill-prefix.sh"
@@ -151,6 +244,5 @@ case "${1:-}" in
     status)  cmd_status ;;
     qr)      shift; exec "$HERE/maple-login" login --qr "$@" ;;
     session) shift; exec "$HERE/maple-login" status "$@" ;;
-    -h|--help|help) awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "$0" ;;
     *)       exec "$HERE/maple-login" "$@" ;;                 # otp / forget / keepalive / --name … 不再自己維護第二張表
 esac
