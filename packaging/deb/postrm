@@ -1,0 +1,16 @@
+#!/bin/sh
+# 移除時提醒:每個使用者的資料不在套件裡,dpkg 不會刪。
+# 這段提示跟 packaging/arch/maple-cask.install 的 post_remove 是同一段,改的話兩邊一起改
+# (postrm 跑的時候套件檔案已經刪了,沒辦法共用一份文字檔)。
+set -e
+if [ "$1" = remove ]; then
+    cat <<'EOF'
+maple-cask:每個使用者的資料沒有被刪(prefix、wine runner、設定、登入 session、cmsdl):
+  ~/.config/maplestory-tw  ~/.local/share/maplestory-tw  ~/.cache/maplestory-tw
+  ~/.config/systemd/user/maple-keepalive.{service,timer}(開過 keepalive 才有)
+  env.sh 裡 GAME_DIR 指的遊戲目錄(約 70GB)也還在。
+下次請在移除套件前,以各使用者身分先跑 maple uninstall;現在要清就手動 rm -rf 上面的路徑。
+kernel.split_lock_mitigate = 0 會維持到重開機。
+EOF
+fi
+exit 0

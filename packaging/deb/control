@@ -1,0 +1,22 @@
+Package: maple-cask
+Version: @VERSION@
+Architecture: all
+Section: games
+Priority: optional
+Maintainer: kevin <qazsskevin@gmail.com>
+Installed-Size: @SIZE@
+Homepage: https://github.com/kevin00156/maple-cask
+Depends: gamescope, winetricks, python3, python3-requests, python3-cryptography, locales
+Recommends: libsecret-tools, libglib2.0-bin, xvfb
+Suggests: chromium
+Description: MapleStory TW (Taiwan) launcher for Linux
+ maple-cask runs the Taiwanese MapleStory client with a patched wine runner
+ inside gamescope, and logs in with beanfun OTP (QR code or passkey).
+ The wine runner, DXVK and the game itself (about 70GB) are downloaded per
+ user by "maple update" / "maple install" into ~/.local/share/maplestory-tw.
+ .
+ This package changes a kernel setting: it installs
+ /usr/lib/sysctl.d/99-maple-cask.conf with kernel.split_lock_mitigate = 0
+ (also applied immediately on install), because the game's anti-cheat
+ triggers split locks and the kernel's default penalty causes periodic
+ stutter. It also loads the ntsync module at boot (/usr/lib/modules-load.d).
