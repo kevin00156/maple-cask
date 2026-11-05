@@ -108,9 +108,12 @@ if [ -n "${FONTS_DIR:-}" ]; then
     rm -f "$FD"/simsun.ttc "$FD"/simsunb.ttf "$FD"/SimsunExtG.ttf
     # shellcheck disable=SC2012  # 只是數檔案個數給人看,字型檔名不會有換行
     echo "   $(ls "$FD" | wc -l) 個字型檔;驗證(全部應為 intLead=0,條內 RGB 值 2~3):"
-    # gamefont.exe 不進 git(二進位),沒有就當場編;建置指令在 gamefont.c 檔頭
+    # gamefont.exe 不進 git(二進位),沒有就當場編;建置指令在 gamefont.c 檔頭。
+    # 套件安裝($REPO 沒有 .git)是預先編好的、目錄唯讀:不見了就是套件壞了,不要叫人裝 mingw
     GAMEFONT=$REPO/tools/gamefont.exe
-    if [ ! -f "$GAMEFONT" ]; then
+    if [ ! -f "$GAMEFONT" ] && [ ! -e "$REPO/.git" ]; then
+        echo "   沒有 $GAMEFONT,略過字型驗證(套件裝壞了?請重裝套件)"
+    elif [ ! -f "$GAMEFONT" ]; then
         build=$(grep -m1 -o 'x86_64-w64-mingw32-gcc .*' "$REPO/tools/gamefont.c")
         if command -v x86_64-w64-mingw32-gcc >/dev/null; then
             echo "   編 gamefont.exe:$build"

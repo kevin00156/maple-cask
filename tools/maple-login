@@ -681,8 +681,9 @@ def env_problem() -> str | None:
         return None
     return (
         "沒設 " + "、".join(missing) + "\n"
-        "  它們跟 run.sh / prefix/setup-prefix.sh 是同一份契約,照 env.example 設:\n"
-        "      mkdir -p ~/.config/maplestory-tw && cp env.example ~/.config/maplestory-tw/env.sh"
+        "  它們跟 run.sh / prefix/setup-prefix.sh 是同一份契約。在終端機跑 maple 會問遊戲目錄並產生設定檔;\n"
+        "  或自己照 env.example 設:\n"
+        f"      mkdir -p ~/.config/maplestory-tw && cp {os.path.join(os.path.dirname(HERE), 'env.example')} ~/.config/maplestory-tw/env.sh"
     )
 
 
@@ -690,10 +691,15 @@ def build_mapletype() -> str | None:
     """mapletype.exe 不進 git(二進位):沒有、或比 .c 舊(git pull 過),就當場編。
 
     建置指令只有一份,在 mapletype.c 檔頭(build-wine.sh、setup-prefix.sh 也是這樣撈)。
-    編不成但手上有舊的 exe 就照用;連舊的都沒有才回一段話。
+    編不成但手上有舊的 exe 就照用;連舊的都沒有才回一段話。套件安裝(沒有 .git)一律不編。
     """
     src = MAPLETYPE[:-len(".exe")] + ".c"
     have = os.path.exists(MAPLETYPE)
+    if not os.path.exists(os.path.join(HERE, "..", ".git")):
+        # 套件安裝:預先編好、目錄唯讀,不編也不寫。不見了就是套件壞了,不要叫人裝 mingw
+        return None if have else (
+            f"沒有 {MAPLETYPE}:套件裝壞了,請重裝套件\n"
+            "      sudo apt install --reinstall maple-cask(Arch:sudo pacman -S maple-cask)")
     if have and os.path.getmtime(MAPLETYPE) >= os.path.getmtime(src):
         return None
     with open(src, encoding="utf-8") as f:
