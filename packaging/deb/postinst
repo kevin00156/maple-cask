@@ -1,0 +1,9 @@
+#!/bin/sh
+# 裝好後立刻套用 kernel 設定(之後每次開機由 systemd-sysctl / systemd-modules-load 自己載)。
+# 容器裡或 kernel 沒有 ntsync 會失敗,不擋安裝。
+set -e
+if [ "$1" = configure ]; then
+    sysctl -p /usr/lib/sysctl.d/99-maple-cask.conf >/dev/null 2>&1 || true
+    modprobe ntsync 2>/dev/null || true
+fi
+exit 0

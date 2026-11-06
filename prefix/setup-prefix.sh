@@ -12,6 +12,7 @@
 #
 # setup-prefix.sh --check:只讀,看第 1~4 步的產物都在不在(只要 WINEPREFIX)。maple / run.sh 開遊戲前跑;
 # 缺了就印出缺哪些、exit 1。第 5 步字型是選用的,不查。
+# setup-prefix.sh --locale:只查有沒有 zh_TW.UTF-8 locale(WINEPREFIX 已是 ACP 950 就不用),沒有就印怎麼裝、exit 1。
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
@@ -37,10 +38,28 @@ check() {
     echo "  補:maple setup(多開第 N 組:maple -N setup),或 source env.sh 後跑 prefix/setup-prefix.sh" >&2
     return 1
 }
+
+# code page 950 是 wineboot「建 prefix 時」由 locale 決定的,建錯了只能刪掉重來 → 沒有 zh_TW.UTF-8 就先別建。
+# WINEPREFIX 已經是 ACP 950 的不擋(code page 不會再變)。查不了(沒有 locale 指令)就交給建完後的 ACP 檢查
+locale_ok() {
+    grep -q '^"ACP"="950"' "${WINEPREFIX:-/nonexistent}/system.reg" 2>/dev/null && return 0
+    command -v locale >/dev/null || return 0
+    locale -a 2>/dev/null | grep -qiE '^zh_TW\.utf-?8$' && return 0
+    cat >&2 <<'EOF'
+系統沒有 zh_TW.UTF-8 locale(locale -a 看不到 zh_TW.utf8)。沒有它 prefix 會用錯的 code page 建起來,中文全亂。先裝:
+  Ubuntu:          sudo locale-gen zh_TW.UTF-8
+  Debian / Arch 系:sudo sed -i 's/^# *zh_TW.UTF-8 UTF-8/zh_TW.UTF-8 UTF-8/' /etc/locale.gen && sudo locale-gen
+裝好後 locale -a | grep -i zh_TW 看得到 zh_TW.utf8,再重跑 maple
+EOF
+    return 1
+}
+
 if [ "${1:-}" = --check ]; then
     : "${WINEPREFIX:?請設定 WINEPREFIX}"
     check; exit
 fi
+# setup-prefix.sh --locale:只查上面那件事(maple 在下載 runner / 分遊戲目錄之前先問)
+if [ "${1:-}" = --locale ]; then locale_ok; exit; fi
 # 直接跑本腳本的人常忘了先載 env.sh(#5 的回報者就是),提示裡直接給兩種正確做法
 need="未設定;用 maple setup,或先 source ~/.config/maplestory-tw/env.sh 再跑本腳本"
 : "${WINE_ROOT:?$need}" "${WINEPREFIX:?$need}" "${GAME_DIR:?$need}"
@@ -48,6 +67,7 @@ WINE=$WINE_ROOT/bin/wine
 WINESERVER=$WINE_ROOT/bin/wineserver
 [ -x "$WINE" ] || { echo "找不到 $WINE"; exit 1; }
 [ -f "$GAME_DIR/MapleStory.exe" ] || { echo "$GAME_DIR 裡沒有 MapleStory.exe"; exit 1; }
+locale_ok || exit 1
 export WINE WINESERVER WINEPREFIX WINEARCH=win64
 export WINEDEBUG=-all WINEDLLOVERRIDES="mscoree,mshtml="
 # code page 950 是在 prefix「建立時」由 locale 決定的,之後改沒用;所以整支腳本都跑在 zh_TW
@@ -108,9 +128,12 @@ if [ -n "${FONTS_DIR:-}" ]; then
     rm -f "$FD"/simsun.ttc "$FD"/simsunb.ttf "$FD"/SimsunExtG.ttf
     # shellcheck disable=SC2012  # 只是數檔案個數給人看,字型檔名不會有換行
     echo "   $(ls "$FD" | wc -l) 個字型檔;驗證(全部應為 intLead=0,條內 RGB 值 2~3):"
-    # gamefont.exe 不進 git(二進位),沒有就當場編;建置指令在 gamefont.c 檔頭
+    # gamefont.exe 不進 git(二進位),沒有就當場編;建置指令在 gamefont.c 檔頭。
+    # 套件安裝($REPO 有 install.sh 放的 VERSION)是預先編好的、目錄唯讀:不見了就是套件壞了,不要叫人裝 mingw
     GAMEFONT=$REPO/tools/gamefont.exe
-    if [ ! -f "$GAMEFONT" ]; then
+    if [ ! -f "$GAMEFONT" ] && [ -f "$REPO/VERSION" ]; then
+        echo "   沒有 $GAMEFONT,略過字型驗證(套件裝壞了?請重裝套件)"
+    elif [ ! -f "$GAMEFONT" ]; then
         build=$(grep -m1 -o 'x86_64-w64-mingw32-gcc .*' "$REPO/tools/gamefont.c")
         if command -v x86_64-w64-mingw32-gcc >/dev/null; then
             echo "   編 gamefont.exe:$build"

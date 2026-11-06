@@ -28,7 +28,7 @@ URL=https://dl.winehq.org/wine/source/${WINE_VERSION%%.*}.x/wine-$WINE_VERSION.t
 JOBS=${JOBS:-$(nproc)}
 GE_VERSION=$(cat "$REPO/build/GE_PROTON_VERSION")
 GE_DIR=${GE_DIR:-$HOME/.steam/root/compatibilitytools.d/${GE_VERSION}-x86_64}
-VERSION=$(git -C "$REPO" describe --tags --always 2>/dev/null || echo dev)
+VERSION=$(git -C "$REPO" describe --tags --match 'v*' --always 2>/dev/null || echo dev)
 
 echo "== 0. build 依賴 =="
 missing=""

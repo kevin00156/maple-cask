@@ -1,8 +1,17 @@
-# 推 v* tag → 用 build/build-wine.sh 從零 build wine runner → 掛到該 tag 的 GitHub Release。
-# 手動觸發(Actions 頁的 Run workflow)只 build、產物放在 workflow artifact,不發 Release ——
+# 推 v* tag → 用 build/build-wine.sh 從零 build wine runner → 掛到該 tag 的 GitHub Release;
+# 同時打 .deb、在乾淨的 Ubuntu / Debian / Arch 容器裝起來冒煙測試,過了才把 .deb 加進 Release、發 apt repo。
+# 手動觸發(Actions 頁的 Run workflow)只 build 與冒煙測試、產物放在 workflow artifact,不發 Release ——
 # 打 tag 之前先用它確認 build 得過。
 #
-# build 步驟只有一份,在 build/build-wine.sh;這裡只負責裝依賴與上傳。
+# job 依賴(tag 時):
+#   build ───────────────────────────┐
+#   build-deb ─┬─ smoke-deb(3 個發行版) ─┼─ release-deb ── mirror ── apt-repo ── aur
+#              └─ smoke-arch ───────────┘
+#   release-deb 等 build:.deb 要加進 build 建的那個 Release、併進它的 SHA256SUMS。
+#   apt-repo 等 mirror:套件裝的 VERSION 會去抓同一個 tag 的 runner,runner 要先在 Release 與鏡像上。
+#
+# build 步驟只有一份,在 build/build-wine.sh 與 packaging/;這裡只負責裝依賴、secrets 與上傳。
+# 需要 secrets:R2_*(見 mirror.yml)、APT_SIGNING_KEY(apt repo 簽章私鑰,armored、無密碼;公鑰是 assets/maple-cask.gpg)。
 name: release
 
 on:
@@ -58,11 +67,224 @@ jobs:
             ${{ runner.temp }}/build/maplestory-tw-wine-*.tar.xz
             ${{ runner.temp }}/build/SHA256SUMS
 
+  # 跟 build 平行:幾十秒就打完,冒煙測試不必等 wine build 幾個小時
+  build-deb:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # 手動觸發時版本號用 git describe --tags 取
+
+      - name: 版本號(tag 就用 tag;手動觸發用最近的 tag)
+        id: ver
+        run: |
+          if [[ $GITHUB_REF == refs/tags/v* ]]; then tag=$GITHUB_REF_NAME; else tag=$(git describe --tags --abbrev=0); fi
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
+      - name: 打包依賴
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mingw-w64 dpkg-dev
+
+      - name: packaging/build-deb.sh
+        run: packaging/build-deb.sh "v${{ steps.ver.outputs.version }}" out/
+
+      # 手動觸發也是從這裡拿;tag 時冒煙測試與 release-deb 也從這裡拿,不重打
+      - uses: actions/upload-artifact@v4
+        with:
+          name: maple-cask-deb
+          path: out/maple-cask_*_all.deb
+
+  # 在乾淨的支援發行版上裝:Depends 寫錯(套件名不存在、沒開對的 component)在這裡就會裝不起來
+  smoke-deb:
+    needs: build-deb
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ['ubuntu:25.10', 'ubuntu:26.04', 'debian:trixie']
+    container: ${{ matrix.image }}
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: maple-cask-deb
+
+      # 跟 README 的安裝說明同一組前置:gamescope 在 Ubuntu 的 multiverse、Debian 的 trixie-backports,
+      # winetricks 在 Debian 的 contrib。Ubuntu 的 docker image 目前已預設開 multiverse,這裡照樣補,不靠 image 預設
+      - name: 開 multiverse / contrib / backports
+        run: |
+          src=/etc/apt/sources.list.d
+          if [ -f $src/ubuntu.sources ]; then
+            grep -q multiverse $src/ubuntu.sources || sed -i 's/^Components: .*/& multiverse/' $src/ubuntu.sources
+          else
+            sed -i 's/^Components: main$/Components: main contrib/' $src/debian.sources
+            printf '%s\n' 'Types: deb' 'URIs: http://deb.debian.org/debian' 'Suites: trixie-backports' \
+              'Components: main contrib' 'Signed-By: /usr/share/keyrings/debian-archive-keyring.pgp' > $src/backports.sources
+          fi
+          apt-get update
+
+      - name: apt-get install ./maple-cask_*.deb
+        run: apt-get install -y ./maple-cask_*.deb
+
+      # 用一般使用者跑,跟實際使用一樣(設定檔、cache 都在使用者家目錄)
+      - name: maple help / 沒設定檔時要講清楚
+        run: |
+          useradd -m tester
+          su tester -c 'maple help' > help.out
+          head -3 help.out
+          # 沒 tty、沒 env.sh:不能卡在問問題,要非零結束並說沒有設定檔
+          rc=0; su tester -c 'maple </dev/null' > noenv.out 2>&1 || rc=$?
+          cat noenv.out
+          [ "$rc" -ne 0 ] || { echo "maple 沒設定檔時應該非零結束"; exit 1; }
+          grep -q '沒有設定檔' noenv.out
+
+  # repo 裡的 PKGBUILD 就是從本地 checkout 打包(README 的 Arch 裝法):照使用者的做法跑一次 makepkg → pacman -U
+  smoke-arch:
+    runs-on: ubuntu-24.04
+    container: archlinux:latest
+    steps:
+      - name: 打包依賴
+        run: pacman -Syu --noconfirm --needed base-devel git mingw-w64-gcc
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # PKGBUILD 用 git describe --tags 推版本
+
+      # makepkg 不能用 root 跑;checkout 交給一般使用者(擁有者相同,git 就不擋 safe.directory)
+      - name: 建使用者
+        run: |
+          useradd -m builder
+          chown -R builder: "$GITHUB_WORKSPACE"
+
+      # -d:runtime depends 交給下面的 pacman -U 從官方庫裝,順便驗套件名
+      - name: makepkg(本地 checkout)
+        run: su builder -c 'cd packaging/arch && makepkg -d --noconfirm'
+
+      - name: pacman -U
+        run: pacman -U --noconfirm packaging/arch/maple-cask-*-any.pkg.tar.zst
+
+      - name: maple help
+        run: |
+          useradd -m tester
+          su tester -c 'maple help' | head -3
+
+  # 冒煙測試全過才把 .deb 放上 Release:Release 上有的 .deb 都是裝得起來的
+  release-deb:
+    needs: [build, build-deb, smoke-deb, smoke-arch]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: maple-cask-deb
+          path: out
+
+      # .deb 的 sha 併進 runner 那份 SHA256SUMS(不另開檔):mirror.yml 用 sha256sum -c 整份驗,
+      # tools/maple-update 只 grep 自己那行 runner tarball,多一行不影響。
+      # 先傳 .deb 再換 SHA256SUMS:任何時刻 SHA256SUMS 列的檔都已經在 Release 上
+      - name: .deb 加進 Release、更新 SHA256SUMS
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" out/maple-cask_*_all.deb
+          gh release download "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" -p SHA256SUMS -D sums
+          (cd out && sha256sum maple-cask_*_all.deb) >> sums/SHA256SUMS
+          cat sums/SHA256SUMS
+          gh release upload "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --clobber sums/SHA256SUMS
+
   # Release 發完才鏡像:鏡像的檔案就是 Release 上那份(順便驗過一次)
   mirror:
-    needs: build
+    needs: release-deb
     if: startsWith(github.ref, 'refs/tags/v')
     uses: ./.github/workflows/mirror.yml
     with:
       tag: ${{ github.ref_name }}
     secrets: inherit
+
+  # https://dl.qazsskevin.org/apt/:索引與簽章由 packaging/apt-repo.sh 產(本機也能跑),這裡只管金鑰與上傳
+  apt-repo:
+    needs: [build-deb, mirror]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: maple-cask-deb
+          path: out
+
+      - name: 依賴
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends apt-utils gnupg
+
+      # 私鑰只進這個 job 的臨時 GNUPGHOME,job 結束 runner 就丟了
+      - name: packaging/apt-repo.sh(產索引、簽章、驗簽)
+        env:
+          APT_SIGNING_KEY: ${{ secrets.APT_SIGNING_KEY }}
+        run: |
+          export GNUPGHOME=$RUNNER_TEMP/gnupg
+          install -d -m 700 "$GNUPGHOME"
+          gpg --batch --import <<<"$APT_SIGNING_KEY"
+          packaging/apt-repo.sh out/maple-cask_${{ needs.build-deb.outputs.version }}_all.deb apt/
+          rm -rf "$GNUPGHOME"
+
+      - name: 上傳到 R2,再讀回來驗
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          # 同 mirror.yml:aws cli 新版預設帶的 checksum 標頭 R2 不一定吃
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+          ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+        run: |
+          dst=s3://maple-cask/apt
+          up() { aws s3 cp apt/ "$dst/" --recursive --endpoint-url "$ENDPOINT" "$@"; }
+          forever="public, max-age=31536000, immutable"
+          # 順序 = 被引用的先上:pool 與 by-hash(內容永不改,不刪舊的)→ Packages → Release / InRelease。
+          # 否則 apt 可能拿到新索引、卻抓不到它指的檔
+          up --exclude '*' --include 'pool/*' --include '*/by-hash/*' --include maple-cask.gpg --cache-control "$forever"
+          up --exclude '*' --include 'dists/*/Packages*' --exclude '*/by-hash/*' --cache-control "public, max-age=300"
+          up --exclude '*' --include 'dists/stable/Release' --include 'dists/stable/Release.gpg' --include 'dists/stable/InRelease' \
+            --cache-control "public, max-age=300"
+          # 只讀回這次傳的檔(pool 會累積歷代 .deb,不必整個拉回來);走 S3 API 的理由同 mirror.yml
+          (cd apt && find . -type f -printf '%P\n' | sort) > files
+          (cd apt && xargs -a ../files sha256sum) > sums
+          while read -r f; do aws s3 cp "$dst/$f" "back/$f" --endpoint-url "$ENDPOINT" --only-show-errors; done < files
+          cd back && sha256sum -c ../sums
+          echo "apt repo:https://dl.qazsskevin.org/apt/"
+
+  # AUR 目前暫停註冊,沒有帳號可推:先產出 AUR 用的 PKGBUILD 與 .SRCINFO(tag tarball + sha256)當 artifact,人工拿去用。
+  # AUR 帳號開放後:加 secret AUR_SSH_KEY,這個 job 改成 clone ssh://aur@aur.archlinux.org/maple-cask.git、
+  # 放進這兩個檔、commit 推上去。
+  aur:
+    needs: apt-repo
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    container: archlinux:latest
+    steps:
+      - name: 依賴
+        run: pacman -Syu --noconfirm --needed base-devel git
+
+      - uses: actions/checkout@v4
+
+      # update-pkgbuild.sh 會下載 GitHub 的 tag tarball 算 sha256;.SRCINFO 要 makepkg(不能用 root)
+      - name: packaging/arch/update-pkgbuild.sh
+        run: |
+          useradd -m builder
+          chown -R builder: "$GITHUB_WORKSPACE"
+          mkdir /tmp/aur && chown builder: /tmp/aur
+          su builder -c "packaging/arch/update-pkgbuild.sh $GITHUB_REF_NAME /tmp/aur"
+          cat /tmp/aur/.SRCINFO
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aur-maple-cask
+          include-hidden-files: true   # .SRCINFO 是點開頭的檔
+          path: /tmp/aur/

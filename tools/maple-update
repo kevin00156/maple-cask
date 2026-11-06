@@ -1,22 +1,31 @@
 #!/bin/bash
-# maple-update — 把腳本、wine runner、prefix 一起帶到最新 Release。經 `maple update` 呼叫。
+# maple-update — 把腳本帶到最新 Release,再把 wine runner、prefix 同步到腳本的版本。經 `maple update` 呼叫。
 #   maple update             更新(遊戲要先關;多開的每一組一起)
-#   maple update --check     只查、有新版印一行;一天真的查一次(maple 開遊戲時自動跑)
+#   maple update --sync      腳本不動,只把 runner + prefix 同步到腳本版本(maple 開遊戲前問過你才跑)
+#   maple update --check     只查、有新版印一行;一天真的查一次(maple 開遊戲時自動跑)。套件安裝不連網,只說有沒有同步
+#   maple update --synced    runner / prefix 已同步到腳本版本就 exit 0;沒有就印一句、exit 1(給 maple 用)
 #   maple update --rollback  runner 退回上一版(腳本不動)
 #   maple update --busy      任何一組的遊戲 / wineserver 在跑就 exit 0(給 maple-game 用)
+#   maple update --version   印腳本版本
 #
+# 腳本版本 = $REPO/VERSION(套件安裝)或 git describe 的最近 v* tag(git clone)。每個 v* tag 都有一份 runner,
+# runner 追的是腳本版本那個 tag,不是「最新」—— 腳本與 runner 是一起發版的一對。
 # 什麼會被更新,各自一條規則,不看你是誰:
-#   腳本   = 這個 git clone 的 HEAD 在最新 tag 的歷史上、追蹤中的檔案沒被改 → git merge --ff-only
-#   runner = env.sh 的 WINE_ROOT 指向 $MAPLE_DATA/runners/current → 下載、校驗、解開、換 symlink
+#   腳本   = git clone 的 HEAD 在最新 Release tag 的歷史上、追蹤中的檔案沒被改 → git merge --ff-only
+#            套件安裝($REPO 有 VERSION)不動,交給 apt / pacman
+#   runner = env.sh 的 WINE_ROOT 指向 $MAPLE_DATA/runners/current → 下載腳本版本那份、校驗、解開、換 symlink
 #   不符合的那項就跳過並說原因;自己 build / 自己放 runner 的人不會被動到。
-# 有任何東西換了,每一組都重跑 prefix/setup-prefix.sh:它會把 runner 裡的 DXVK 複製進 prefix,不重跑就還是舊的。
+# 腳本版本跟上次同步的不同(或 runner 換了),每一組都重跑 prefix/setup-prefix.sh:它會把 runner 裡的 DXVK
+# 複製進 prefix,不重跑就還是舊的。做完把版本記在 $MAPLE_DATA/synced-version。
 # 最後確保 build/CMSDL_VERSION 那版 cmsdl 在(更新遊戲用;腳本更新後版本可能換了)。
 set -euo pipefail
 HERE=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 REPO=$(dirname "$HERE")
 CFG=${XDG_CONFIG_HOME:-$HOME/.config}/maplestory-tw
 MAIN_ENV=${MAPLE_ENV:-$CFG/env.sh}
-RUNNERS=${MAPLE_DATA:-${XDG_DATA_HOME:-$HOME/.local/share}/maplestory-tw}/runners
+DATA=${MAPLE_DATA:-${XDG_DATA_HOME:-$HOME/.local/share}/maplestory-tw}
+RUNNERS=$DATA/runners
+SYNCED=$DATA/synced-version
 CACHE=${XDG_CACHE_HOME:-$HOME/.cache}/maplestory-tw
 STAMP=$CACHE/update-check
 DEFAULT_SLUG=kevin00156/maple-cask
@@ -25,6 +34,22 @@ DEFAULT_SLUG=kevin00156/maple-cask
 MIRROR=${MAPLE_MIRROR-https://dl.qazsskevin.org}
 
 die() { echo "$*" >&2; exit 1; }
+
+# 套件安裝:整份腳本在唯讀的 /usr/share/maple-cask,install.sh 在裡面放了 VERSION(git clone 沒有這個檔)
+packaged() { [ -f "$REPO/VERSION" ]; }
+
+# 腳本版本(例如 v0.2.3)。查不到(沒有 tag 的 clone)就印空字串
+version() {
+    local v
+    if packaged; then read -r v <"$REPO/VERSION"; echo "$v"; return; fi
+    git -C "$REPO" describe --tags --match 'v*' --abbrev=0 2>/dev/null || true
+}
+
+synced() { cat "$SYNCED" 2>/dev/null || true; }
+mark_synced() { mkdir -p "$DATA" && echo "$1" >"$SYNCED"; }
+
+# CI 打出來的 runner 叫 maplestory-tw-wine-<tag>(build/build-wine.sh);不連網判斷「已是這版」用
+runner_of() { echo "maplestory-tw-wine-$1"; }
 
 # 同時只能有一個 update / rollback:兩個一起跑會寫同一個 .part,互相弄壞(VM 驗收時真的發生過)。
 # 鎖在 fd 9,行程結束自動放;會常駐的子行程(wineserver)要用 9>&- 別把它帶走。
@@ -54,12 +79,13 @@ busy() {
     return 1
 }
 
-# 最新 Release:印「tag tarball檔名 tarball網址 SHA256SUMS網址 tarball大小(MB)」。用 Release 不用 git tag:
-# tag 推上去後 CI 還要跑 40 分鐘 tarball 才出現。fork 的人就追自己 fork 的 Release。
-latest() {
+# Release 的資訊:印「tag tarball檔名 tarball網址 SHA256SUMS網址 tarball大小(MB)」。$1 = latest 或 tags/<tag>。
+# 「最新」用 Release 不用 git tag:tag 推上去後 CI 還要跑 40 分鐘 tarball 才出現。fork 的人就追自己 fork 的 Release。
+release() {
     local slug
-    slug=$(git -C "$REPO" remote get-url origin 2>/dev/null | sed -nE 's#.*github\.com[:/](.*)$#\1#p' | sed 's/\.git$//')
-    curl -fsS --max-time 10 "https://api.github.com/repos/${slug:-$DEFAULT_SLUG}/releases/latest" | python3 -c '
+    # 套件安裝沒有 .git:git 失敗不能讓 pipefail 把整個函式帶走,退回預設 slug
+    slug=$(git -C "$REPO" remote get-url origin 2>/dev/null | sed -nE 's#.*github\.com[:/](.*)$#\1#p' | sed 's/\.git$//') || true
+    curl -fsS --max-time 10 "https://api.github.com/repos/${slug:-$DEFAULT_SLUG}/releases/$1" | python3 -c '
 import json, sys
 r = json.load(sys.stdin)
 url = {a["name"]: a["browser_download_url"] for a in r["assets"]}
@@ -77,14 +103,12 @@ scripts_why() {
     git -C "$REPO" diff --quiet HEAD || { echo "有未 commit 的改動,不動"; return; }
 }
 
-# runner 該換成 $1 就什麼都不印;不該就印原因
+# runner 歸 maple update 管就什麼都不印;不歸就印原因
 runner_why() {
     local root
     root=$(envvar "$MAIN_ENV" WINE_ROOT)
     [ "$(readlink -m "$root")" = "$(readlink -m "$RUNNERS/current")" ] ||
-        { echo "WINE_ROOT=$root 由你自己管(要交給 maple update 就改成 $RUNNERS/current)"; return; }
-    [ "$(readlink "$RUNNERS/current" 2>/dev/null)" = "$1" ] && echo "已是 $1"
-    return 0
+        echo "WINE_ROOT=$root 由你自己管(要交給 maple update 就改成 $RUNNERS/current)"
 }
 
 # 下載、校驗、解到 runners/$1。來源依序是鏡像、GitHub;校驗碼只信 GitHub 的 SHA256SUMS,
@@ -127,25 +151,51 @@ prune() {
     done
 }
 
-# setup 中途失敗的話,之後再 update 也不會重跑它(腳本與 runner 都已是最新)→ 要講清楚怎麼補
+# 每一組重跑 setup-prefix。遊戲還沒裝的那組跳過(setup 要 MapleStory.exe),之後 maple 開遊戲前會補。
+# 中途失敗的話 synced-version 不會寫,下次 maple 會再問;要講清楚怎麼補
 refresh_prefixes() {
     local f n
     for f in $(envs); do
-        echo "== setup-prefix($f)"
         n=$(sed -n 's/^env-\([2-9]\)\.sh$/ -\1/p' <<<"${f##*/}")
+        [ -f "$(envvar "$f" GAME_DIR)/MapleStory.exe" ] ||
+            { echo "== 跳過 setup-prefix($f):遊戲還沒裝;裝好後 maple 會自動 setup"; continue; }
+        echo "== setup-prefix($f)"
         # shellcheck disable=SC2016  # 單引號是故意的:$1/$2 要由內層 bash -c 展開
         env -u WINE_ROOT -u WINEPREFIX -u GAME_DIR bash -c 'source "$1" && exec "$2"' _ "$f" "$REPO/prefix/setup-prefix.sh" 9>&- ||
             die "setup-prefix 沒跑完,遊戲開不起來;修好上面的錯誤後重跑:maple$n setup"
     done
 }
 
+# runner / prefix 已同步到腳本版本就安靜 exit 0;沒有就印一句(maple 拿來當問題)、exit 1。
+# 沒有 synced-version 但已經有 runner(或自己管 runner)= 舊版升上來、第一次碰到這個機制:維持現狀,
+# 靜默記成已同步、不問 —— 不然會把 runner 預設換掉(rollback 過的還會被同步回去)、沒終端機時擋住開遊戲。
+# 想換 runner 自己 maple update。完全沒有 runner 才是第一次使用
+synced_check() {
+    local ver
+    ver=$(version)
+    [ -n "$ver" ] && [ "$(synced)" != "$ver" ] && [ -f "$MAIN_ENV" ] || return 0     # 沒設定檔:判斷不了 runner 歸誰管
+    if [ ! -f "$SYNCED" ]; then
+        if [ -n "$(runner_why)" ] || [ -e "$RUNNERS/current" ]; then mark_synced "$ver"; return 0; fi
+        echo "第一次使用:下載 $ver 的 wine runner 並建 prefix"
+        return 1
+    fi
+    echo "腳本已更新到 $ver,同步 runner 與 prefix"
+    return 1
+}
+
 check() {
-    local tag tar _
-    if [ -n "$(find "$STAMP" -mmin -1440 2>/dev/null)" ]; then cat "$STAMP"; return; fi
+    local tag _
     [ -f "$MAIN_ENV" ] || return 0
-    read -r tag tar _ < <(latest 2>/dev/null) || return 0     # 沒網路就安靜跳過,也不寫快取
+    # 套件安裝:新版交給 apt / pacman,這裡不連網,只說有沒有同步
+    if packaged; then
+        synced_check >/dev/null || echo "runner / prefix 還沒同步到 $(version):maple update(先關遊戲)"
+        return 0
+    fi
+    # 一天內查過就用快取;快取說的新版已經是現在的腳本(自己 git pull 過)就不再提
+    if [ -n "$(find "$STAMP" -mmin -1440 2>/dev/null)" ]; then grep -vF "有新版 $(version):" "$STAMP" || true; return; fi
+    read -r tag _ < <(release latest 2>/dev/null) || return 0     # 沒網路就安靜跳過,也不寫快取
     mkdir -p "$CACHE"
-    if [ -z "$(scripts_why "$tag")" ] || [ -z "$(runner_why "${tar%.tar.xz}")" ]; then
+    if [ -z "$(scripts_why "$tag")" ]; then
         echo "有新版 $tag:maple update(先關遊戲)" >"$STAMP"
     else
         : >"$STAMP"
@@ -153,40 +203,91 @@ check() {
     cat "$STAMP"
 }
 
-update() {
-    local tag tar tarurl sumsurl mb name swhy rwhy old
-    [ -f "$MAIN_ENV" ] || die "沒有 $MAIN_ENV:先從 env.example 複製過去填好(見 README)"
-    lock
-    busy && die "遊戲或 wineserver 還在跑,先 maple stop(多開的每一組都要)"
-    read -r tag tar tarurl sumsurl mb < <(latest) || true
-    [ -n "${sumsurl:-}" ] || die "查不到最新 Release(沒網路?)"
-    name=${tar%.tar.xz}
-    swhy=$(scripts_why "$tag")
-    rwhy=$(runner_why "$name")
-    echo "最新 Release:$tag"
-    echo "  腳本:  ${swhy:-→ $tag}"
-    echo "  runner:${rwhy:-→ $name}"
-    rm -f "$STAMP"
-    [ -z "$swhy" ] || [ -z "$rwhy" ] || return 0
+# 腳本版本;clone 沒有 tag 就不知道 runner 該用哪版
+need_version() {
+    local ver
+    ver=$(version)
+    [ -n "$ver" ] || die "查不到腳本版本:這個 git clone 沒有 tag(git -C $REPO fetch --tags 再試)"
+    echo "$ver"
+}
 
-    [ -n "$rwhy" ] || install_runner "$name" "$tarurl" "$sumsurl" "$tag" "$mb"
-    if [ -z "$swhy" ]; then
-        old=$(git -C "$REPO" rev-parse HEAD)
-        git -C "$REPO" merge -q --ff-only "$tag"
-        git -C "$REPO" diff --quiet "$old" HEAD -- build/GAMESCOPE_VERSION build/build-gamescope.sh 'patches/gamescope-*' ||
-            echo "注意:gamescope 的 patch 有變。有自己 build gamescope 的話,重跑 build/build-gamescope.sh"
+# current 換成 $1 版的 runner($2 = 現在的,變 previous)。本地已經有那版(rollback 過再 update 回來)
+# 就直接切,不連網
+switch_runner() {
+    local ver=$1 cur=$2 want tar tarurl sumsurl mb
+    want=$(runner_of "$ver")
+    if [ -d "$RUNNERS/$want" ]; then
+        echo "  runner:→ $want(本地已有,不用下載)"
+    else
+        read -r _ tar tarurl sumsurl mb < <(release "tags/$ver") || true
+        [ -n "${sumsurl:-}" ] || die "查不到 $ver 的 Release(沒網路?tag 剛推、CI 還沒發完?)"
+        want=${tar%.tar.xz}
+        echo "  runner:→ $want"
+        install_runner "$want" "$tarurl" "$sumsurl" "$ver" "$mb"
     fi
-    if [ -z "$rwhy" ] && [ "$(readlink "$RUNNERS/current" || true)" != "$name" ]; then
-        [ -e "$RUNNERS/current" ] && point previous "$(readlink "$RUNNERS/current")"
-        point current "$name"
-        prune
+    [ -z "$cur" ] || point previous "$cur"
+    point current "$want"
+    prune
+}
+
+# runner + 每一組 prefix 帶到腳本版本 $1,成功才寫 synced-version。已經同步過就什麼都不做
+sync_to() {
+    local ver=$1 rwhy cur changed=
+    rwhy=$(runner_why)
+    cur=$(readlink "$RUNNERS/current" 2>/dev/null || true)
+    if [ -n "$rwhy" ]; then
+        echo "  runner:$rwhy"
+    elif [ "$cur" = "$(runner_of "$ver")" ]; then
+        echo "  runner:已是 $cur"
+    else
+        switch_runner "$ver" "$cur"
+        changed=1
     fi
+    if [ -z "$changed" ] && [ "$(synced)" = "$ver" ]; then echo "已同步到 $ver,不用重跑 setup"; return 0; fi
     refresh_prefixes
-    echo "完成:$tag"
+    mark_synced "$ver"
+    echo "完成:$ver"
+}
+
+# update / sync 共同的前置:要有設定檔、拿到鎖、沒有遊戲在跑
+prepare() {
+    [ -f "$MAIN_ENV" ] || die "沒有 $MAIN_ENV:先跑 maple(會問遊戲目錄並產生設定檔),或從 env.example 複製過去填好"
+    lock
+    if busy; then die "遊戲或 wineserver 還在跑,先 maple stop(多開的每一組都要)"; fi
+}
+
+update() {
+    local tag swhy old _
+    prepare
+    rm -f "$STAMP"
+    if packaged; then
+        echo "腳本:套件安裝:腳本由套件管理器更新"
+    else
+        read -r tag _ < <(release latest) || true
+        [ -n "${tag:-}" ] || die "查不到最新 Release(沒網路?)"
+        swhy=$(scripts_why "$tag")
+        echo "最新 Release:$tag"
+        echo "  腳本:  ${swhy:-→ $tag}"
+        if [ -z "$swhy" ]; then
+            old=$(git -C "$REPO" rev-parse HEAD)
+            git -C "$REPO" merge -q --ff-only "$tag"
+            git -C "$REPO" diff --quiet "$old" HEAD -- build/GAMESCOPE_VERSION build/build-gamescope.sh 'patches/gamescope-*' ||
+                echo "注意:gamescope 的 patch 有變。有自己 build gamescope 的話,重跑 build/build-gamescope.sh"
+        fi
+    fi
+    sync_to "$(need_version)"      # 快轉過的話,這裡拿到的已經是新的腳本版本
+}
+
+sync_only() {
+    local ver
+    prepare
+    ver=$(need_version)
+    echo "腳本版本:$ver"
+    sync_to "$ver"
 }
 
 rollback() {
-    local cur prev
+    local cur prev ver
     lock
     busy && die "遊戲或 wineserver 還在跑,先 maple stop(多開的每一組都要)"
     cur=$(readlink "$RUNNERS/current" || true)
@@ -196,16 +297,29 @@ rollback() {
     point previous "$cur"
     echo "runner:$cur → $prev"
     refresh_prefixes
-    echo "腳本沒動;要一起退:git -C $REPO checkout <舊的 tag>(之後 git checkout main 再 maple update 回來)"
+    # 退版是刻意的:記成「已同步」,maple 開遊戲時才不會又問要不要同步回去
+    ver=$(version)
+    [ -z "$ver" ] || mark_synced "$ver"
+    if packaged; then
+        echo "腳本沒動(套件安裝:腳本版本由套件管理器決定);下次 maple update 會把 runner 帶回 $ver"
+    else
+        echo "腳本沒動;要一起退:git -C $REPO checkout <舊的 tag>(之後 git checkout main 再 maple update 回來)"
+    fi
 }
+
+# update / sync 做完都要確保 cmsdl 在
+fetch_cmsdl() { "$HERE/maple-game" fetch || echo "cmsdl 沒裝成,開遊戲時就不會自動更新遊戲;重跑 maple update 會再試"; }
 
 # 整支包在函式裡、最後一行才執行:git merge 會在執行中途換掉這個檔案,bash 得先讀完整份
 main() {
     case "${1:-}" in
-        "")         update; "$HERE/maple-game" fetch || echo "cmsdl 沒裝成,開遊戲時就不會自動更新遊戲;重跑 maple update 會再試" ;;
+        "")         update; fetch_cmsdl ;;
+        --sync)     sync_only; fetch_cmsdl ;;
         --check)    check ;;
+        --synced)   synced_check ;;
         --rollback) rollback ;;
         --busy)     busy ;;
+        --version)  version ;;
         *)          awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} NR>1 {exit}' "$0"; exit 2 ;;
     esac
 }
