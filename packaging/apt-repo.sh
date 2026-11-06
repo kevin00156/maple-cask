@@ -25,9 +25,10 @@ set -euo pipefail
 umask 022
 
 HERE=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
-DEB=${1:?用法:apt-repo.sh DEB OUTDIR}
+# 下面會 cd "$OUT",路徑先轉成絕對的
+DEB=$(readlink -f "${1:?用法:apt-repo.sh DEB OUTDIR}")
 OUT=${2:?用法:apt-repo.sh DEB OUTDIR}
-APT_PUBKEY=${APT_PUBKEY:-$HERE/../assets/maple-cask.gpg}
+APT_PUBKEY=$(readlink -f "${APT_PUBKEY:-$HERE/../assets/maple-cask.gpg}")
 DIST=dists/stable
 ARCHES=(all amd64)
 
