@@ -42,7 +42,7 @@ packaged() { [ -f "$REPO/VERSION" ]; }
 # 開遊戲 / update 這些要用到版本的先講清楚;login、qr 等不需要版本的照常
 need_kind() {
     packaged || [ -e "$REPO/.git" ] && return 0
-    echo "$REPO 不是 git clone 也不是套件安裝(GitHub 的 zip 下載?)。只支援 git clone 或 apt / Arch 套件,見 README「安裝」" >&2
+    echo "$REPO 不是 git clone 也不是套件安裝(GitHub 的 zip 下載?)。只支援 git clone 或 apt / Arch 套件,見 README「安裝」與 docs/install.md" >&2
     exit 1
 }
 

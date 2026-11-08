@@ -164,7 +164,7 @@ leftover() {
     echo "留著:$DATA 裡還有 ${rest% }(不是 maple 下載的,自己決定)"
 }
 
-# git clone:指到這份 clone 的 maple 連結(PATH 上那個,或 README 教的 ~/.local/bin/maple)找得到才叫你刪
+# git clone:指到這份 clone 的 maple 連結(PATH 上那個,或 docs/install.md 教的 ~/.local/bin/maple)找得到才叫你刪
 how_to_remove_scripts() {
     local link
     if packaged; then

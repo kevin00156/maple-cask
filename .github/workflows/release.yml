@@ -142,7 +142,7 @@ jobs:
           [ "$rc" -ne 0 ] || { echo "maple 沒設定檔時應該非零結束"; exit 1; }
           grep -q '沒有設定檔' noenv.out
 
-  # repo 裡的 PKGBUILD 就是從本地 checkout 打包(README 的 Arch 裝法):照使用者的做法跑一次 makepkg → pacman -U
+  # repo 裡的 PKGBUILD 就是從本地 checkout 打包(docs/install.md 的 Arch 裝法):照使用者的做法跑一次 makepkg → pacman -U
   smoke-arch:
     runs-on: ubuntu-24.04
     container: archlinux:latest
