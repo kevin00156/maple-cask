@@ -43,6 +43,17 @@ jobs:
             libxcomposite-dev libxinerama-dev libfreetype-dev libfontconfig-dev libvulkan-dev libgnutls28-dev \
             libasound2-dev libpulse-dev libgl-dev libegl-dev libudev-dev libunwind-dev libglib2.0-dev libsdl2-dev
 
+      # 上游 wine 與 GE-Proton 的 tarball(~560MB)留在 cache,發版不必每次重下:
+      # github.com 的 releases/download 會連續 504 十幾分鐘(v1.0.0 兩次 build 都死在這)。
+      # build-wine.sh 檔案在就不下載、下載與否都驗釘住的 hash,所以 cache 壞了也只會驗不過、不會用錯檔
+      - name: 下載快取(wine / GE-Proton tarball)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ runner.temp }}/build/wine-*.tar.xz
+            ${{ runner.temp }}/build/ge/*.tar.gz
+          key: tarballs-${{ hashFiles('build/WINE_VERSION', 'build/WINE_SHA256', 'build/GE_PROTON_VERSION', 'build/GE_PROTON_SHA512') }}
+
       - name: build/build-wine.sh
         env:
           BUILD_DIR: ${{ runner.temp }}/build
