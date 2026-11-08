@@ -19,7 +19,7 @@ sudo apt install build-essential bison flex pkg-config python3 perl mingw-w64 cu
 2. 用 `patch -p1 -F0` 套 [`patches/`](../patches/README.md)
 3. 以 `--enable-archs=i386,x86_64`(WoW64)編;ntsync 一律用 repo 內的 `build/include/linux/ntsync.h`(kernel UAPI header 原樣複製),
    configure 沒抓到就停 —— build 主機有沒有這個 header 都 build 出同樣有 ntsync 的 runner
-4. 放進 GE-Proton 的 DXVK / vkd3d-proton(版本釘在 `build/GE_PROTON_VERSION`,下載後以官方 sha512 校驗;
+4. 放進 GE-Proton 的 DXVK / vkd3d-proton(版本釘在 `build/GE_PROTON_VERSION`、sha512 釘在 `build/GE_PROTON_SHA512`(抄自官方 .sha512sum),下載後一定校驗;
    已經有解開的 GE-Proton 就用 `GE_DIR=…` 指過去)
 5. 編 `tools/*.c`(mingw)
 6. 打成 `maplestory-tw-wine-<版本>.tar.xz`,裡面附 patch 與 base 版本 + sha256(LGPL 義務)
