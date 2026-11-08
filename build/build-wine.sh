@@ -27,6 +27,7 @@ TARBALL=$BUILD_DIR/wine-$WINE_VERSION.tar.xz
 URL=https://dl.winehq.org/wine/source/${WINE_VERSION%%.*}.x/wine-$WINE_VERSION.tar.xz
 JOBS=${JOBS:-$(nproc)}
 GE_VERSION=$(cat "$REPO/build/GE_PROTON_VERSION")
+GE_SHA512=$(cat "$REPO/build/GE_PROTON_SHA512")
 GE_DIR=${GE_DIR:-$HOME/.steam/root/compatibilitytools.d/${GE_VERSION}-x86_64}
 VERSION=$(git -C "$REPO" describe --tags --match 'v*' --always 2>/dev/null || echo dev)
 
@@ -87,14 +88,15 @@ du -sh "$OUT"
 echo "== 4. DXVK + vkd3d-proton(取自 $GE_VERSION)=="
 if [ ! -d "$GE_DIR/files/lib/wine/dxvk" ]; then
     mkdir -p "$BUILD_DIR/ge"
-    # 資產檔名帶架構後綴(GE-Proton11-6-x86_64.tar.gz);同名的 .sha512sum 是官方校驗碼
+    # 資產檔名帶架構後綴(GE-Proton11-6-x86_64.tar.gz)。sha512 釘在 build/GE_PROTON_SHA512(抄自官方同名 .sha512sum):
+    # 不在 build 時下載校驗檔 —— 跟 tarball 同一個來源驗不出被換掉,而且 github.com 的 releases/download 會一直 504
     name=$GE_VERSION-x86_64.tar.gz
     base=https://github.com/GloriousEggroll/proton-ge-custom/releases/download/$GE_VERSION
     if [ ! -f "$BUILD_DIR/ge/$name" ]; then
         curl -fL --retry 10 --retry-all-errors -C - -o "$BUILD_DIR/ge/$name.part" "$base/$name"   # 534MB、GitHub CDN 會斷
         mv "$BUILD_DIR/ge/$name.part" "$BUILD_DIR/ge/$name"
     fi
-    curl -fsL --retry 3 "$base/$GE_VERSION-x86_64.sha512sum" | (cd "$BUILD_DIR/ge" && sha512sum -c -)
+    echo "$GE_SHA512  $BUILD_DIR/ge/$name" | sha512sum -c -
     tar -C "$BUILD_DIR/ge" -xzf "$BUILD_DIR/ge/$name"
     # shellcheck disable=SC2012  # 目錄名是 GE-Proton<版本>,沒有特殊字元
     GE_DIR=$(ls -d "$BUILD_DIR/ge"/GE-Proton*/ | head -1)
