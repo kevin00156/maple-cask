@@ -73,12 +73,21 @@ export WINEDEBUG=-all WINEDLLOVERRIDES="mscoree,mshtml="
 # code page 950 是在 prefix「建立時」由 locale 決定的,之後改沒用;所以整支腳本都跑在 zh_TW
 export LANG=zh_TW.UTF-8 LC_ALL=zh_TW.UTF-8
 
+# 開始前這個 prefix 的 wineserver 就在(別人的,可能是遊戲):最後只能等它自己退,不能 -k 收掉
+had_server=false
+for p in $(pgrep -x wineserver); do
+    tr '\0' '\n' <"/proc/$p/environ" 2>/dev/null | grep -qxF "WINEPREFIX=$WINEPREFIX" && had_server=true
+done
+
 echo "== 1. prefix =="
 # wine 只建 prefix 這一層;上一層不存在(新機:~/.local/share/maplestory-tw 還沒有)它會直接失敗
 mkdir -p "$WINEPREFIX"
-"$WINE" wineboot -u >/dev/null      # stderr 留著:這步失敗時那是唯一的線索
-"$WINESERVER" -w
-acp=$(grep -m1 '^"ACP"' "$WINEPREFIX/system.reg" || true)
+# .update-timestamp 記著上次 update 時 wine.inf 的 mtime,一樣就是這個 runner 已經 update 過(wine 自己也這樣判斷),
+# 不用再白跑 wineboot -u。中間不 wineserver -w:那是空等 server 閒置退出,一次 7~13 秒;寫回磁碟留到最後一起
+[ "$(head -n1 "$WINEPREFIX/.update-timestamp" 2>/dev/null)" = "$(stat -c %Y "$WINE_ROOT/share/wine/wine.inf" 2>/dev/null)" ] ||
+    "$WINE" wineboot -u >/dev/null      # stderr 留著:這步失敗時那是唯一的線索
+# 問 server,不讀 system.reg:登錄檔在 server 退出前不一定寫回檔案
+acp=$("$WINE" reg query 'HKLM\System\CurrentControlSet\Control\Nls\CodePage' /v ACP 2>/dev/null | grep -m1 ACP || true)
 case $acp in *950*) echo "   ACP=950 OK" ;;
     *) echo "   ACP 不是 950(拿到:$acp)。系統要有 zh_TW.UTF-8 locale(各發行版的做法見 README「需求」;locale -a 要看得到 zh_TW.utf8),然後刪掉 prefix 重跑"; exit 1 ;;
 esac
@@ -96,7 +105,6 @@ Windows Registry Editor Version 5.00
 "ExecPath"="$winpath"
 EOF
 "$WINE" regedit /S "$WINEPREFIX/gamania.reg"
-"$WINESERVER" -w
 
 echo "== 3. DXVK + vkd3d-proton(64 與 32 位元都放)=="
 for d in "${DXVK[@]}"; do
@@ -114,8 +122,9 @@ else
     for t in winetricks cabextract; do
         command -v $t >/dev/null || { echo "需要 $t(Ubuntu/Debian:sudo apt install $t;SteamOS 見 docs/known-issues.md「SteamOS」)"; exit 1; }
     done
-    winetricks -q vcrun2022
-    "$WINESERVER" -w
+    # 多組平行 setup(maple update)時,winetricks 的下載快取是共用的,同時下載會互踩
+    mkdir -p "${XDG_CACHE_HOME:-$HOME/.cache}/maplestory-tw"
+    flock "${XDG_CACHE_HOME:-$HOME/.cache}/maplestory-tw/winetricks.lock" winetricks -q vcrun2022
 fi
 
 echo "== 5. 字型 =="
@@ -123,7 +132,7 @@ if [ -n "${FONTS_DIR:-}" ]; then
     [ -f "$FONTS_DIR/mingliu.ttc" ] || echo "   警告:$FONTS_DIR 裡沒有 mingliu.ttc(新細明體),遊戲九成的字都靠它"
     FD=$WINEPREFIX/drive_c/windows/Fonts
     mkdir -p "$FD"
-    cp -f "$FONTS_DIR"/* "$FD"/ 2>/dev/null || true
+    cp -u "$FONTS_DIR"/* "$FD"/ 2>/dev/null || true     # -u:沒變的不重抄(三百多個檔)
     # SimSun 沒有 Big5 位元又會蓋掉登錄檔的代換,一定要拿掉(理由見 reg/fonts.reg)
     rm -f "$FD"/simsun.ttc "$FD"/simsunb.ttf "$FD"/SimsunExtG.ttf
     # shellcheck disable=SC2012  # 只是數檔案個數給人看,字型檔名不會有換行
@@ -143,12 +152,17 @@ if [ -n "${FONTS_DIR:-}" ]; then
             echo "     sudo apt install mingw-w64 && cd $REPO/tools && $build"
         fi
     fi
-    # 圖寫到 /tmp,不要在使用者的工作目錄留垃圾(不帶參數的話 exe 會寫在 cwd)
-    [ -f "$GAMEFONT" ] && "$WINE" "$GAMEFONT" 'Z:\tmp\gamefont.bmp' 2>/dev/null || true
+    # 圖寫進 prefix,不要在使用者的工作目錄留垃圾(不帶參數的話 exe 會寫在 cwd);多組平行跑也不會寫同一個檔
+    bmp=$WINEPREFIX/gamefont.bmp
+    [ -f "$GAMEFONT" ] && "$WINE" "$GAMEFONT" "Z:${bmp//\//\\}" 2>/dev/null || true
 else
     echo "   沒設 FONTS_DIR,略過。遊戲能玩但中文會糊、行距會跑;要修就把 Windows 的 C:\\Windows\\Fonts"
     echo "   (至少 mingliu.ttc)複製到某處,設 FONTS_DIR 指過去再跑一次本腳本。"
 fi
 
+# 登錄檔等 server 退出才寫回 system.reg,check 讀的是檔案。自己起的 server 用 -k 收:SIGINT 讓它收掉 client、
+# 寫回登錄檔再退(0.2 秒);等它閒置自己退要 7~13 秒。開始前就在的 server 不是我們的,只能等
+$had_server || "$WINESERVER" -k
+"$WINESERVER" -w
 check || exit 1     # 上面各步與 --check 的清單對不上,在這裡就會現形
 echo "== 完成:WINEPREFIX=$WINEPREFIX =="
