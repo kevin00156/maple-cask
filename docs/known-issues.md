@@ -310,6 +310,51 @@ keyrepeat-probe 驗證(獨立 prefix、gamescope 內、按住 2 秒):Shift / Ctr
   300/62(約 16ms),遊戲吃得下。要調就改 prefix 的 `HKCU\Control Panel\Keyboard`。
 - 一般鍵的速率從此由 wine 決定,**`xset r rate` 對遊戲不再有效**。
 
+### 瞬移石按 Enter,到新地圖聊天框自己彈出來(MC-20,2026-11-14)
+症狀:瞬移石用 Enter 確認換圖,到了新地圖聊天輸入框自己彈出來、拿走焦點(偶發);滑鼠點、傳送點按「上」都不會,Windows 不會。
+
+**根因在 0012**:server 要等遊戲執行緒處理到 KeyRelease 才知道鍵放開了,而 winex11 只在那條執行緒抽訊息時才處理 X 事件。
+遊戲收到 Enter 就開始換圖,主執行緒一秒以上不抽訊息;server 以為 Enter 還按著,500ms 後開始每 12ms 排連發 keydown,
+TranslateMessage 把每個都變成 `'\r'`,載完圖聊天框就開了。Windows 上放開是系統的輸入執行緒即時處理的,跟應用程式忙不忙無關。
+
+證據:XI2 被動監聽看到 X 只有一次 press / release(輕點 50ms 也中);`WINEDEBUG=+key` 看到放開之後遊戲又
+TranslateMessage 一個 `VK_RETURN scancode 401c`(bit 30 = 前一次狀態按下),換圖 10 次有 9 次。
+
+**修法**(併入 0012):server 沒辦法提早知道鍵放開了,所以改成「放開一到,就把多排的連發收回來」:
+- winex11 一讀到 KeyRelease(送進輸入法**之前**)就通知 server(`SEND_HWMSG_KEY_RELEASED`):停掉那個鍵的連發,
+  並把佇列裡還沒被執行緒取走的連發 keydown 移掉。不產生訊息、不動按鍵狀態。
+- 真正的 key-up 到 server 時也做同樣的清除(給不送通知的 driver)。
+
+win32u 的 PeekMessage / GetMessage 會先處理 X 事件再去 server 拿訊息(節流:每 125µs 最多一次),所以執行緒拿不到「放開之後」才排的連發。
+連發的節奏(500ms 後每 12ms、最後按的鍵連發)完全沒動。
+
+遊戲內確認(2026-11-15,`WINEDEBUG=+timestamp,+key,+rawinput`):瞬移石 Enter 換圖 16 次,`VK_RETURN 401c` 0 次、聊天框沒再跳;
+按住 Z / Shift 共 13 段,第 1→2 下 500~507ms,之後平均 12.0~12.6ms。遊戲有註冊 rawinput 鍵盤(usage 6,`RIDEV_INPUTSINK`),
+幽靈連發的 `WM_INPUT` 沒有造成可見問題。第 1→2 下的 500ms 是 `KeyboardDelay=1`(Windows 預設值),要短就把它設成 0(250ms)。
+
+`tools/dev/busykey-probe.c` 實測(Xvfb,盡量像遊戲:X 連發 600/25、接 fcitx5 XIM、每 16ms 抽一次訊息、
+收到 keydown 後 1500ms 不抽訊息;xdotool 輕點 Enter 5~800ms):
+
+| | 輕點後多收到的連發 | 按住 J 2 秒 | 按住右鍵再按住 Shift 1.5 秒 |
+|---|---|---|---|
+| 修之前 | 83~84 個,每個一個 `'\r'` | 128 | Shift 84 |
+| 修之後 | **0**(21 次,有/無 XIM、兩種忙法) | 124 | Shift 83 |
+
+少掉的那幾個是「放開之後、處理到放開之前」排的。Enter 一路按到忙完之後才放:連發照常持續到放開為止。
+
+**修錯的兩版(留作教訓)**,都是在遊戲裡被打回來的(第 1 版的證據是遊戲的 `+key` trace,第 2 版事後用同一支探針離線重現):
+1. *server 只連發修飾鍵,一般鍵還給 X*:聊天框好了,但 X 對按住的方向鍵的連發會一直把 Shift 的連發取消(trace:按著右鍵再按住 Shift,Shift 一次都沒連發),
+   一般鍵退回 X 的 600 / 40ms,技能連發變卡。
+2. *連發前先看執行緒的 X 連線有沒有沒讀的資料,有就跳過這一拍*:兩頭都錯。載入時只要重畫(`UpdateWindow` → `QS_PAINT`),
+   Xlib 就把 socket 讀空、KeyRelease 留在它自己的記憶體佇列裡沒處理,檢查看不到(84 個幽靈連發照舊);
+   而平常按住時 X 自己的連發事件讓 socket 多半是可讀的,連發被跳掉一堆(J 127 → 89,按著右鍵的 Shift 85 → 45)。
+
+教訓:第一版探針每 1ms 抽一次訊息、忙的時候只 `Sleep`、沒接 XIM —— 三個地方都不像遊戲,所以兩個錯的修法都「驗證通過」。
+第三版(只在 key-up 清除)也是接上 XIM 才量出還會漏 3~10 個:KeyRelease 被送去 fcitx 再轉回來的那 1ms 內,執行緒已經先拿走幾個連發。
+
+已知限制:幽靈連發在被收回之前,已經送給 rawinput(`WM_INPUT`)與 low-level keyboard hook 了(0012 一直都是這樣);
+`GetAsyncKeyState` 在執行緒處理到放開之前仍回報按著(上游 winex11 本來就是)。
+
 ## 間歇卡頓、畫面忽快忽慢:kernel 的 split lock 懲罰 → `kernel.split_lock_mitigate=0`(2026-10-23)
 症狀:同一個場景有時順有時卡,打王時特別明顯;MangoHud 看平均幀率不低,但 1% low 很差。
 

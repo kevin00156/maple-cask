@@ -35,6 +35,30 @@ Otherwise X's repeats and the server's interleave -- with X's delay (600ms
 under gamescope by default) longer than the server's (500ms) a held J got a
 burst of server repeats at 12ms before X's 40ms repeats took over.
 
+The server only learns that a key is up when the window's thread processes
+the KeyRelease, and a busy thread does not.  MapleStory starts a map change
+on the Enter that confirms a teleport rock and pumps no messages for a
+second or more; the server, still seeing Enter down, queued repeats at 12ms
+for a key released long ago, and TranslateMessage made each a '\r' that
+opened the chat box on the new map.  The server cannot find out any
+earlier: the release may sit unread in the socket, in Xlib's queue (any
+XCheckIfEvent for another kind of event, such as the QS_PAINT pass of
+UpdateWindow, empties the socket), or with the input method, which gets a
+KeyRelease first and forwards it back.  So the repeats are taken back when
+the release does arrive:
+
+  - winex11 tells the server as soon as it reads a KeyRelease, before
+    XFilterEvent (send_hardware_message with SEND_HWMSG_KEY_RELEASED): the
+    server stops repeating that key and removes its repeats that the thread
+    has not retrieved yet.  Nothing else changes: no message, no key state.
+  - the hardware key-up itself removes them as well, for drivers that do not
+    send the notice.
+
+win32u processes driver events before it peeks the server queue (at most
+once per 125us tick), so the thread does not get to see a repeat made after
+the release.  Repeats the thread had
+already retrieved, and injected ones, are left alone.
+
 Injected input (SendInput) is not affected: the repeat
 logic only looks at IMO_HARDWARE.
 
@@ -46,10 +70,92 @@ keyrepeat-probe in a separate prefix under gamescope, 2s holds:
     J            X's 600/40ms     183, 501ms / 12ms
     Shift, then J held 398ms later: Shift once, then J repeats (as Windows).
 
+busykey-probe on Xvfb, made to look like the game: X autorepeat 600/25,
+fcitx5 as XIM server, messages pumped every 16ms, and 1500ms without
+pumping after the first WM_KEYDOWN (busy=1 Sleep, busy=2 UpdateWindow every
+10ms).  Enter tapped with xdotool for 5..800ms:
+                          repeats delivered after the tap
+    before                83-84, each with a '\r'
+    after                 0 (21 runs, with and without XIM, busy=1 and 2)
+    Enter held through the busy period: repeats go on until the release.
+Held 2s while pumping, before / after: J 128 / 124, Left Shift 126 / 125,
+Right then Shift 84 / 83 for Shift; 500ms then 12ms in every case (the few
+missing ones are those queued between the release and its processing).
+
+Two fixes that did not work:
+  - repeat only modifiers in the server, leave the rest to X: X's repeats
+    of a held arrow key kept cancelling Shift's (+key trace of the game:
+    Right held, Shift held, not one Shift repeat), and the other keys fell
+    back to X's 600/40ms.
+  - skip a repeat while the thread's queue fd is readable (measured with
+    the probe above): Xlib empties the
+    socket without dispatching the release (busy=2: 84 ghosts again), and
+    X's own repeats of the held key make the fd readable most of the time
+    (J 127 -> 89, Shift with Right held 85 -> 45).
+
 diff --git a/server/queue.c b/server/queue.c
 --- a/server/queue.c
 +++ b/server/queue.c
-@@ -2369,6 +2369,11 @@
+@@ -1885,6 +1885,24 @@
+     return 0;
+ }
+ 
++/* remove the auto-repeats of a key that its thread has not retrieved yet; a driver only reports a
++ * release when its thread processes events, and until then the server went on repeating the key */
++static void remove_pending_key_repeats( struct thread_input *input, unsigned int scan )
++{
++    struct message *msg, *next;
++
++    LIST_FOR_EACH_ENTRY_SAFE( msg, next, &input->msg_list, struct message, entry )
++    {
++        struct hardware_msg_data *msg_data = msg->data;
++
++        if (msg->msg != WM_KEYDOWN && msg->msg != WM_SYSKEYDOWN) continue;
++        if (((msg->lparam >> 16) & 0xff) != scan || msg->unique_id) continue;
++        if (!(msg->lparam & (KF_REPEAT << 16)) || msg_data->source.origin != IMO_HARDWARE) continue;
++        list_remove( &msg->entry );
++        free_message( msg );
++    }
++}
++
+ /* queue a hardware message into a given thread input */
+ static void queue_hardware_message( struct desktop *desktop, struct message *msg, int always_queue )
+ {
+@@ -1948,6 +1966,9 @@
+     if (!always_queue || merge_message( input, msg )) free_message( msg );
+     else
+     {
++        if ((msg->msg == WM_KEYUP || msg->msg == WM_SYSKEYUP) && desktop->key_repeat.enable &&
++            msg_data->source.origin == IMO_HARDWARE)
++            remove_pending_key_repeats( input, (msg->lparam >> 16) & 0xff );
+         msg->unique_id = 0;  /* will be set once we return it to the app */
+         list_add_tail( &input->msg_list, &msg->entry );
+         set_queue_bits( thread->queue, QS_HARDWARE | msg_bit );
+@@ -2326,6 +2347,23 @@
+     memset( &desktop->key_repeat.input, 0, sizeof(desktop->key_repeat.input) );
+ }
+ 
++/* a driver has seen the release of a key, and will send the key-up once its thread gets to it */
++static void key_released( struct desktop *desktop, const union hw_input *input )
++{
++    struct thread_input *thread_input = desktop->foreground_input;
++    struct thread *thread;
++
++    if (!desktop->key_repeat.timeout || input->kbd.scan != desktop->key_repeat.input.kbd.scan) return;
++
++    if ((thread = get_window_thread( desktop->key_repeat.win )))
++    {
++        if (thread->queue) thread_input = thread->queue->input;
++        release_object( thread );
++    }
++    if (thread_input) remove_pending_key_repeats( thread_input, input->kbd.scan & 0xff );
++    stop_key_repeat( desktop );
++}
++
+ /* queue a hardware message for a keyboard event */
+ static int queue_keyboard_message( struct desktop *desktop, user_handle_t win, const union hw_input *input,
+                                    unsigned int origin, struct msg_queue *sender, int repeat )
+@@ -2369,6 +2407,11 @@
          break;
      }
  
@@ -61,6 +167,90 @@ diff --git a/server/queue.c b/server/queue.c
      message_code = (input->kbd.flags & KEYEVENTF_KEYUP) ? WM_KEYUP : WM_KEYDOWN;
      switch (vkey)
      {
+@@ -3256,7 +3299,8 @@
+         wait = queue_mouse_message( desktop, req->win, &req->input, origin, sender );
+         break;
+     case INPUT_KEYBOARD:
+-        wait = queue_keyboard_message( desktop, req->win, &req->input, origin, sender, 0 );
++        if (req->flags & SEND_HWMSG_KEY_RELEASED) key_released( desktop, &req->input );
++        else wait = queue_keyboard_message( desktop, req->win, &req->input, origin, sender, 0 );
+         break;
+     case INPUT_HARDWARE:
+         queue_custom_hardware_message( desktop, req->win, origin, &req->input );
+diff --git a/server/protocol.def b/server/protocol.def
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -2373,6 +2373,7 @@
+     int             new_y;
+ @END
+ #define SEND_HWMSG_INJECTED    0x01
++#define SEND_HWMSG_KEY_RELEASED 0x02  /* a key was released; its key-up follows */
+ 
+ 
+ /* Get a message from the current queue */
+diff --git a/include/wine/server_protocol.h b/include/wine/server_protocol.h
+--- a/include/wine/server_protocol.h
++++ b/include/wine/server_protocol.h
+@@ -3114,6 +3114,7 @@
+     char __pad_28[4];
+ };
+ #define SEND_HWMSG_INJECTED    0x01
++#define SEND_HWMSG_KEY_RELEASED 0x02  /* a key was released; its key-up follows */
+ 
+ 
+ 
+diff --git a/dlls/winex11.drv/event.c b/dlls/winex11.drv/event.c
+--- a/dlls/winex11.drv/event.c
++++ b/dlls/winex11.drv/event.c
+@@ -488,6 +488,7 @@
+     while (XCheckIfEvent( data->display, &event, filter_event, (XPointer)(UINT_PTR)mask ))
+     {
+         count++;
++        if (event.type == KeyRelease) X11DRV_KeyReleased( &event.xkey );
+         if (XFilterEvent( &event, None ))
+         {
+             /*
+diff --git a/dlls/winex11.drv/keyboard.c b/dlls/winex11.drv/keyboard.c
+--- a/dlls/winex11.drv/keyboard.c
++++ b/dlls/winex11.drv/keyboard.c
+@@ -1146,6 +1146,26 @@
+ 
+ 
+ /***********************************************************************
++ *           X11DRV_KeyReleased
++ *
++ * Tell the server that a key is up as soon as its release is read.  The key-up proper may come
++ * later, when an input method forwards the event back, and the server must not go on
++ * auto-repeating the key until then.
++ */
++void X11DRV_KeyReleased( XKeyEvent *event )
++{
++    INPUT input = {.type = INPUT_KEYBOARD};
++
++    pthread_mutex_lock( &kbd_mutex );
++    input.ki.wScan = keyc2scan[event->keycode] & 0xff;
++    pthread_mutex_unlock( &kbd_mutex );
++    input.ki.dwFlags = KEYEVENTF_KEYUP;
++
++    NtUserSendHardwareInput( 0, SEND_HWMSG_KEY_RELEASED, &input, 0 );
++}
++
++
++/***********************************************************************
+  *           set_async_key_state
+  */
+ static void set_async_key_state( const BYTE state[256] )
+diff --git a/dlls/winex11.drv/x11drv.h b/dlls/winex11.drv/x11drv.h
+--- a/dlls/winex11.drv/x11drv.h
++++ b/dlls/winex11.drv/x11drv.h
+@@ -582,6 +582,7 @@
+ extern BOOL X11DRV_MotionNotify( HWND hwnd, XEvent *event );
+ extern BOOL X11DRV_EnterNotify( HWND hwnd, XEvent *event );
+ extern BOOL X11DRV_KeyEvent( HWND hwnd, XEvent *event );
++extern void X11DRV_KeyReleased( XKeyEvent *event );
+ extern BOOL X11DRV_KeymapNotify( HWND hwnd, XEvent *event );
+ extern BOOL X11DRV_DestroyNotify( HWND hwnd, XEvent *event );
+ extern BOOL X11DRV_SelectionRequest( HWND hWnd, XEvent *event );
 diff --git a/dlls/winex11.drv/x11drv_main.c b/dlls/winex11.drv/x11drv_main.c
 --- a/dlls/winex11.drv/x11drv_main.c
 +++ b/dlls/winex11.drv/x11drv_main.c
