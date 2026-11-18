@@ -22,7 +22,7 @@ trap 'rm -rf "$TMP"' EXIT
 # 下載 tarball:印 sha256,並把解開後的頂層目錄名記在 $TMP/top(GitHub 會去掉 tag 的 v,不自己猜)
 fetch() {
     local tgz=$TMP/src.tar.gz top
-    curl -fsSL -o "$tgz" "$URL" || die "下載不到 $URL(tag 推上 GitHub 了嗎?)"
+    curl -fsSL --retry 10 --retry-all-errors -o "$tgz" "$URL" || die "下載不到 $URL(tag 推上 GitHub 了嗎?)"
     top=$(tar -tzf "$tgz" | awk -F/ 'NR == 1 {print $1}')
     tar -tzf "$tgz" "$top/packaging/install.sh" >/dev/null 2>&1 ||
         die "v$VER 的 tarball 裡沒有 packaging/install.sh(這個 tag 還沒有打包檔),打不了包"
