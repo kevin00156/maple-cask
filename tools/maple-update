@@ -151,19 +151,36 @@ prune() {
     done
 }
 
-# 每一組重跑 setup-prefix。遊戲還沒裝的那組跳過(setup 要 MapleStory.exe),之後 maple 開遊戲前會補。
-# 中途失敗的話 synced-version 不會寫,下次 maple 會再問;要講清楚怎麼補
+# 一組 setup-prefix,輸出進 log;失敗才把 log 印出來,並講清楚怎麼補。$1 = env 檔,$2 = maple 的 -N(主設定是空的)
+setup_one() {
+    local log=$CACHE/setup-prefix${2// /}.log
+    # shellcheck disable=SC2016  # 單引號是故意的:$1/$2 要由內層 bash -c 展開
+    if env -u WINE_ROOT -u WINEPREFIX -u GAME_DIR bash -c 'source "$1" && exec "$2"' _ "$1" "$REPO/prefix/setup-prefix.sh" >"$log" 2>&1; then
+        echo "   完成($1)"
+        return
+    fi
+    # 一次 printf 寫完,別跟其他組的輸出交錯
+    printf '%s\n' "== setup-prefix($1)失敗:" "$(cat "$log")" "   修好上面的錯誤後重跑:maple$2 setup" >&2
+    return 1
+}
+
+# 每一組重跑 setup-prefix,同時最多 5 組(每組有自己的 wineserver,互不干擾)。
+# 遊戲還沒裝的那組跳過(setup 要 MapleStory.exe),之後 maple 開遊戲前會補。
+# 中途失敗的話 synced-version 不會寫,下次 maple 會再問
 refresh_prefixes() {
-    local f n
+    local f n p pids=() fail=0
+    mkdir -p "$CACHE"
     for f in $(envs); do
         n=$(sed -n 's/^env-\([2-9]\)\.sh$/ -\1/p' <<<"${f##*/}")
         [ -f "$(envvar "$f" GAME_DIR)/MapleStory.exe" ] ||
             { echo "== 跳過 setup-prefix($f):遊戲還沒裝;裝好後 maple 會自動 setup"; continue; }
+        while [ "$(jobs -rp | wc -l)" -ge 5 ]; do wait -n || true; done     # 結果下面逐一 wait 再收
         echo "== setup-prefix($f)"
-        # shellcheck disable=SC2016  # 單引號是故意的:$1/$2 要由內層 bash -c 展開
-        env -u WINE_ROOT -u WINEPREFIX -u GAME_DIR bash -c 'source "$1" && exec "$2"' _ "$f" "$REPO/prefix/setup-prefix.sh" 9>&- ||
-            die "setup-prefix 沒跑完,遊戲開不起來;修好上面的錯誤後重跑:maple$n setup"
+        setup_one "$f" "$n" 9>&- &
+        pids+=($!)
     done
+    for p in "${pids[@]}"; do wait "$p" || fail=1; done
+    [ $fail = 0 ] || die "setup-prefix 沒跑完,遊戲開不起來"
 }
 
 # runner / prefix 已同步到腳本版本就安靜 exit 0;沒有就印一句(maple 拿來當問題)、exit 1。
