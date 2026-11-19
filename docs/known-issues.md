@@ -355,6 +355,22 @@ win32u 的 PeekMessage / GetMessage 會先處理 X 事件再去 server 拿訊息
 已知限制:幽靈連發在被收回之前,已經送給 rawinput(`WM_INPUT`)與 low-level keyboard hook 了(0012 一直都是這樣);
 `GetAsyncKeyState` 在執行緒處理到放開之前仍回報按著(上游 winex11 本來就是)。
 
+## 手把預設關閉:要用就設 `MAPLE_GAMEPAD=1`(2026-11-19)
+wine 的 winebus 用 SDL / hidraw / evdev **直接開 `/dev` 底下的手把**,不經過 gamescope。
+鍵盤走 X 事件,gamescope 只轉給有焦點的視窗;手把沒有這層,而且 gamescope 裡只有遊戲一個視窗,
+wine 永遠認為它在前景(遊戲用 `DISCL_FOREGROUND` 也擋不住)。結果:切到別的視窗玩手把,楓之谷裡的角色照樣動。
+
+另一個同源的坑:主機板 RGB(實測 ASRock LED Controller `26ce:01a2`)這類 HID 描述寫得亂的裝置
+會被當成搖桿,它從不送資料,hat 停在 0 = 北 → 遊戲裡「上」一直被按住,kernel 和 wine 的鍵盤狀態卻都查不到。
+
+所以 `run.sh` 每次啟動前把這個 prefix 的 winebus 三個後端設成關
+(`HKLM\System\CurrentControlSet\Services\winebus`:`Enable SDL`=0、`DisableHidraw`=1、`DisableInput`=1),
+遊戲看不到任何手把。只影響遊戲的 prefix,桌面上其他程式的手把照常。
+要在遊戲裡用手把:`~/.config/maplestory-tw/env.sh` 加 `export MAPLE_GAMEPAD=1`,下次開遊戲生效
+(winebus 只在 wineserver 啟動時讀設定,值有變時 `run.sh` 會先寫入、等 wineserver 退出再開遊戲;多開組各自套用)。
+開了之後背景亂動與假搖桿的問題會回來,假搖桿可以改在 `HKCU\Software\Wine\DirectInput\Joysticks`
+把它的名稱設成 `"disabled"`。
+
 ## 間歇卡頓、畫面忽快忽慢:kernel 的 split lock 懲罰 → `kernel.split_lock_mitigate=0`(2026-10-23)
 症狀:同一個場景有時順有時卡,打王時特別明顯;MangoHud 看平均幀率不低,但 1% low 很差。
 
