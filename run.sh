@@ -35,12 +35,22 @@ gamepad_set() {   # 印出 system.reg 裡 winebus 段落目前的三個值
 }
 if [ "${MAPLE_GAMEPAD:-0}" = 1 ]; then on=1 off=0; else on=0 off=1; fi
 want=$(printf '"DisableHidraw"=dword:0000000%s\n"DisableInput"=dword:0000000%s\n"Enable SDL"=dword:0000000%s\n' $off $off $on)
+ws_alive() {      # 這個 prefix 的 wineserver 還在 → system.reg 可能沒寫回、新值也要等它重啟才生效
+    for p in $(pgrep -x wineserver); do
+        tr '\0' '\n' <"/proc/$p/environ" 2>/dev/null | grep -qxF "WINEPREFIX=$WINEPREFIX" && return 0
+    done; return 1
+}
 if [ "$(gamepad_set)" != "$want" ]; then
-    k='HKLM\System\CurrentControlSet\Services\winebus'
-    for kv in "Enable SDL=$on" "DisableHidraw=$off" "DisableInput=$off"; do
-        "$WINE_ROOT/bin/wine" reg add "$k" /v "${kv%=*}" /t REG_DWORD /d "${kv#*=}" /f >/dev/null
-    done
-    "$WINE_ROOT/bin/wineserver" -w
+    if ws_alive; then
+        echo "提示:這個 prefix 的 wineserver 還在,手把設定(MAPLE_GAMEPAD)這次不套用,關掉遊戲再開" >&2
+    else
+        k='HKLM\System\CurrentControlSet\Services\winebus'
+        for kv in "Enable SDL=$on" "DisableHidraw=$off" "DisableInput=$off"; do
+            "$WINE_ROOT/bin/wine" reg add "$k" /v "${kv%=*}" /t REG_DWORD /d "${kv#*=}" /f >/dev/null || true
+        done
+        "$WINE_ROOT/bin/wineserver" -w || true
+        [ $on = 1 ] || echo "提示:遊戲裡的手把已關閉(背景搖桿會讓角色亂動);要用手把在 env.sh 設 export MAPLE_GAMEPAD=1" >&2
+    fi
 fi
 
 # gamescope 的巢狀 Xwayland 上沒有 XIM server(fcitx5 只註冊在 KWin 的那個 display),中文輸入法會完全沒反應。
