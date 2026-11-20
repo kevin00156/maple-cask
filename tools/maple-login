@@ -82,8 +82,10 @@ def load_env() -> None:
 
 
 def mapletype_cmd() -> list[str]:
-    """一定要 prefix 對應的那份 wine(見 wine_ready())。"""
-    return [os.path.join(os.environ["WINE_ROOT"], "bin", "wine"), MAPLETYPE]
+    """一定要 prefix 對應的那份 wine(見 wine_ready())。
+    經 maple-timens 加入遊戲的 time namespace:wine 的等待逾時用 client 自己的開機時間算(MC-27)。"""
+    return [os.path.join(HERE, "maple-timens"), "--prefix", os.environ["WINEPREFIX"],
+            os.path.join(os.environ["WINE_ROOT"], "bin", "wine"), MAPLETYPE]
 RUN_ENV = ("WINE_ROOT", "WINEPREFIX", "GAME_DIR")
 
 # 半格區塊字元:(上排模組, 下排模組) -> 字元

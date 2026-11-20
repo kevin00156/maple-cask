@@ -381,6 +381,18 @@ echo 'kernel.split_lock_mitigate = 0' | sudo tee /etc/sysctl.d/99-split-lock.con
 修好之後也重測過把整個 prefix 綁在 P-core(大小核 CPU 上的常見建議):三輪交錯各 60 秒,p99 6.8 → 6.5ms,
 感覺不出來,所以 `run.sh` 不綁(P-core 少的筆電綁了反而可能更慢)。想綁自己 `taskset -c <P-core> maple`。
 
+## 開機太久:選角後卡「伺服器連線中」→ `maple-timens`(2026-11-20,MC-27)
+
+症狀:登入、選角畫面都正常,按「遊戲開始」後一直轉「伺服器連線中」。登入伺服器(8484)的連線還在,也會 ACK,但不再回任何資料;遊戲也不會去連頻道伺服器。
+
+原因:電腦開機超過 2^31 ms(24 天 20.5 小時)。wine 的 `GetTickCount` 是 `CLOCK_MONOTONIC`(開機到現在)換算成毫秒,遊戲把它當 32 位元有號數用,超過就變成負的。已實測:用 time namespace 讓遊戲以為開機 25 天,一定會卡;歸零就正常。
+
+處理:`gs-run.sh` 透過 `tools/maple-timens` 啟動 `run.sh`,用 user + time namespace 讓 wine 看到的開機時間從 0 開始算。只動 monotonic / boottime 兩個時鐘,牆上時鐘(`CLOCK_REALTIME`)跟外面完全一樣。之後才從外面啟動的 wine 行程(例如 `maple-login` 的 mapletype)用 `maple-timens --prefix "$WINEPREFIX" …` 加入同一個 namespace:wine client 會用自己的開機時間算等待的截止時間,再交給 wineserver 比較。
+
+- Ubuntu 23.10 起預設不准一般程式建 user namespace。套件安裝時會把 `/etc/apparmor.d/maple-cask` 放進去並載入,只放行 `/usr/share/maple-cask/tools/maple-timens` 這一支(寫法跟系統附的 steam 規則一樣)。它 exec 遊戲前會切回一般的 unconfined,所以遊戲和它的子行程不會繼承這個權限。AppArmor 太舊、解析不了這份規則(Debian 12 / Ubuntu 22.04)就不放;那些版本本來就沒有這個限制。
+- 建不了 namespace(git clone 直接跑、AppArmor 規則沒載入、kernel < 5.6)就照原樣啟動,遊戲照樣能玩;開機超過 23.8 天時 `run.sh` 會警告,重開機就好。
+- 加入既有的 namespace 不需要 AppArmor 放行,任何同一個使用者的行程都能做。
+
 ## 取得帳號 sid 與 OTP
 遊戲登入表單的「帳號」要填 beanfun 的遊戲帳號 **sid**(`T9…` 那串),不是帳號名稱。
 用 `tools/maple-login`:session 失效會自動帶你掃 QR,列出所有帳號與 sid,鑄一張新的 OTP,

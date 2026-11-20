@@ -3,6 +3,13 @@
 # 這段提示跟 packaging/arch/maple-cask.install 的 post_remove 是同一段,改的話兩邊一起改
 # (postrm 跑的時候套件檔案已經刪了,沒辦法共用一份文字檔)。
 set -e
+if [ "$1" = remove ] || [ "$1" = purge ]; then
+    # postinst 放的 AppArmor 規則不是 dpkg 管的檔,要自己收
+    if [ -f /etc/apparmor.d/maple-cask ]; then
+        apparmor_parser -R /etc/apparmor.d/maple-cask 2>/dev/null || true
+        rm -f /etc/apparmor.d/maple-cask
+    fi
+fi
 if [ "$1" = remove ]; then
     cat <<'EOF'
 maple-cask:每個使用者的資料沒有被刪(prefix、wine runner、設定、登入 session、cmsdl):
