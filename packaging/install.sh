@@ -21,7 +21,7 @@ LICENSE_DIR=${LICENSE_DIR:-}
 # 要裝的檔(相對 repo 根,裝到 $SHARE 底下同一個相對路徑)。目錄另外在 list_files 展開
 FILES=(
     tools/maple tools/maple-game tools/maple-login tools/maple-update tools/maple-uninstall
-    tools/maple_passkey.py tools/gs-run.sh tools/kill-prefix.sh
+    tools/maple_passkey.py tools/gs-run.sh tools/kill-prefix.sh tools/maple-timens
     tools/mapletype.c tools/gamefont.c
     run.sh dxvk.conf env.example
     build/CMSDL_VERSION build/CMSDL_SHA256
@@ -73,6 +73,8 @@ EOF
 ntsync
 EOF
     chmod 644 "$DEST"/usr/lib/sysctl.d/99-maple-cask.conf "$DEST"/usr/lib/modules-load.d/maple-cask.conf
+    # AppArmor 規則先放套件目錄,由 postinst 判斷要不要複製進 /etc/apparmor.d(見 packaging/apparmor/maple-cask)
+    install -D -m 644 "$SRC/packaging/apparmor/maple-cask" "$DEST$SHARE/apparmor/maple-cask"
 }
 
 # .deb 的授權:Debian 要 /usr/share/doc/<套件>/copyright(machine-readable 格式),LGPL 全文系統已有一份

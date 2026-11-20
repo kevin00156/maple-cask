@@ -1,0 +1,148 @@
+#!/usr/bin/python3
+"""maple-timens — 讓 wine 看到的「開機時間」從 0 開始算,再 exec 指令。
+
+  maple-timens CMD...               開新的 user + time namespace,monotonic / boottime 歸零,exec CMD
+  maple-timens --prefix DIR CMD...  DIR 這個 prefix 的 wineserver 在別的 time namespace 裡 → 加入它,exec CMD
+
+為什麼:wine 的 GetTickCount 是 CLOCK_MONOTONIC(開機到現在)換成毫秒。遊戲把它當 32 位元有號數用,
+開機超過 2^31 ms(24 天 20.5 小時)就變負的 → 選角按「遊戲開始」永遠卡在「伺服器連線中」(MC-27)。
+time namespace 只動 monotonic / boottime,牆上時鐘(CLOCK_REALTIME)跟外面一模一樣。
+
+--prefix 給「遊戲開起來之後才從外面跑的 wine 行程」用(maple-login 的 mapletype)。不在同一個 namespace 的話,
+wine client 用自己的 monotonic 算等待的截止時間交給 wineserver(ntdll server_wait),兩邊差整段開機時間。
+
+任何一步做不到(Ubuntu 沒裝套件附的 AppArmor 規則、kernel 沒有 time namespace…)就照原樣 exec CMD:
+跟沒有這支一樣,只是開機超過 24.8 天又會卡(run.sh 會警告)。
+"""
+import ctypes
+import os
+import sys
+import time
+
+CLONE_NEWTIME = 0x00000080
+CLONE_NEWUSER = 0x10000000
+_libc = ctypes.CDLL(None, use_errno=True)
+
+
+def _call(fn, *args) -> None:
+    if fn(*args) != 0:
+        err = ctypes.get_errno()
+        raise OSError(err, os.strerror(err))
+
+
+def _write(path: str, text: str) -> None:
+    with open(path, "w") as f:
+        f.write(text)
+
+
+def _enter_new(uid: int, gid: int, offsets: str) -> None:
+    """unshare 新的 user + time namespace、寫好對應與偏移,再讓自己進那個 time namespace。
+    unshare(CLONE_NEWTIME) 只影響之後的子行程,setns 到 time_for_children 才輪到自己(exec 之後也算)。"""
+    _call(_libc.unshare, CLONE_NEWUSER | CLONE_NEWTIME)
+    _write("/proc/self/setgroups", "deny")      # 不寫 deny,一般使用者不准寫 gid_map
+    _write("/proc/self/uid_map", f"{uid} {uid} 1")
+    _write("/proc/self/gid_map", f"{gid} {gid} 1")
+    _write("/proc/self/timens_offsets", offsets)
+    fd = os.open("/proc/self/ns/time_for_children", os.O_RDONLY)
+    try:
+        _call(_libc.setns, fd, CLONE_NEWTIME)
+    finally:
+        os.close(fd)
+
+
+def new_namespace() -> str | None:
+    """成功回 None,失敗回原因。
+
+    先在子行程試一次:AppArmor 限制下 unshare 本身會成功,但之後寫 uid_map 會被拒絕。
+    自己直接試的話,失敗時已經回不去了,會變成 nobody 卡在一個壞掉的 namespace 裡。"""
+    # 留 1 秒:kernel 不准偏移讓時鐘變成負的
+    mono = int(time.clock_gettime(time.CLOCK_MONOTONIC)) - 1   # wine 用的 _RAW 跟著它一起平移
+    boot = int(time.clock_gettime(time.CLOCK_BOOTTIME)) - 1    # /proc/uptime
+    offsets = f"monotonic -{mono} 0\nboottime -{boot} 0\n"
+    uid, gid = os.getuid(), os.getgid()
+    pid = os.fork()
+    if pid == 0:
+        try:
+            _enter_new(uid, gid, offsets)
+            os._exit(0)
+        except OSError as e:
+            os.write(2, f"maple-timens:{e}\n".encode())
+            os._exit(1)
+    _, status = os.waitpid(pid, 0)
+    if status != 0:
+        return "沒辦法建 user + time namespace"
+    try:
+        _enter_new(uid, gid, offsets)
+    except OSError as e:
+        return str(e)
+    return None
+
+
+def find_wineserver(prefix: str) -> int | None:
+    """這個 prefix 的 wineserver。多開時每組各有一個,用 WINEPREFIX 分(跟 tools/maple 的 ours 同一套)。"""
+    want = os.path.realpath(prefix).encode()
+    for d in os.listdir("/proc"):
+        if not d.isdigit():
+            continue
+        try:
+            with open(f"/proc/{d}/comm", "rb") as f:
+                if f.read().strip() != b"wineserver":
+                    continue
+            with open(f"/proc/{d}/environ", "rb") as f:
+                env = f.read().split(b"\0")
+        except OSError:
+            continue
+        for kv in env:
+            if kv.startswith(b"WINEPREFIX=") and os.path.realpath(kv[11:]) == want:
+                return int(d)
+    return None
+
+
+def join_prefix(prefix: str) -> str | None:
+    """加入 prefix 的 wineserver 所在的 user + time namespace。已經同一個 / 沒有 wineserver → 什麼都不做。"""
+    pid = find_wineserver(prefix)
+    if pid is None:
+        return None
+    try:
+        if os.stat(f"/proc/{pid}/ns/time").st_ino == os.stat("/proc/self/ns/time").st_ino:
+            return None
+        # 先 user 再 time:加入 user namespace 之後才有權限(它擁有那個 time namespace)
+        for ns, flag in (("user", CLONE_NEWUSER), ("time", CLONE_NEWTIME)):
+            fd = os.open(f"/proc/{pid}/ns/{ns}", os.O_RDONLY)
+            try:
+                _call(_libc.setns, fd, flag)
+            finally:
+                os.close(fd)
+    except OSError as e:
+        return f"加入 wineserver({pid})的 namespace 失敗:{e}"
+    return None
+
+
+def main(argv: list[str]) -> None:
+    if argv[:1] == ["--prefix"] and len(argv) >= 3:
+        why, cmd = join_prefix(argv[1]), argv[2:]
+    elif argv and not argv[0].startswith("-"):
+        why, cmd = new_namespace(), argv
+    else:
+        sys.exit(__doc__)
+    if why:
+        print(f"maple-timens:{why};照原樣啟動(開機超過 24.8 天會卡「伺服器連線中」)", file=sys.stderr)
+    drop_apparmor_profile()
+    os.execvp(cmd[0], cmd)
+
+
+def drop_apparmor_profile() -> None:
+    """AppArmor 規則只放行這一支建 user namespace,exec 出去的程式回到一般的 unconfined:
+    不然 flags=(unconfined) 的規則會被子行程繼承,整棵遊戲行程樹都能自己建 user namespace。
+    沒有 AppArmor / 本來就不在規則裡 → 寫入失敗,不影響。"""
+    try:
+        with open("/proc/self/attr/current") as f:
+            if not f.read().startswith("maple-cask-timens"):
+                return
+        _write("/proc/self/attr/apparmor/exec", "exec unconfined")
+    except OSError:
+        pass
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

@@ -37,6 +37,11 @@ export XMODIFIERS="${XMODIFIERS:-@im=fcitx}"
 if [ "$(cat /proc/sys/kernel/split_lock_mitigate 2>/dev/null)" = 1 ]; then
     echo "警告:kernel.split_lock_mitigate=1,遊戲主執行緒會一直被罰睡 → 卡頓。修法見 docs/known-issues.md「split lock」" >&2
 fi
+# GetTickCount 是開機到現在的毫秒數,遊戲當 32 位元有號數用:超過 2^31 ms(24.8 天)選角就會卡「伺服器連線中」(MC-27)。
+# 經 maple-timens 啟動的話,這裡看到的開機時間是從 0 開始的,不會觸發。留 1 天餘裕:遊戲開著也會跨過去
+if [ "$(cut -d. -f1 /proc/uptime)" -gt 2059200 ]; then
+    echo "警告:開機已超過 23.8 天,超過 24.8 天選角後會卡「伺服器連線中」。重開機,或見 docs/known-issues.md「開機太久」" >&2
+fi
 # ntsync:同步呼叫不必全排隊到單執行緒的 wineserver。沒有就退回 wineserver,能玩,只是只在做得到的時候提醒
 # (v0.1.4 以前的 release runner 都沒編進去;kernel 太舊沒有這個模組就不提)。
 # 查裝置路徑字串,不是 "ntsync":自建 runner 的安裝路徑常帶這個字,編進去的路徑會讓它永遠成立。

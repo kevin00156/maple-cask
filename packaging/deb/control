@@ -20,3 +20,9 @@ Description: MapleStory TW (Taiwan) launcher for Linux
  (also applied immediately on install), because the game's anti-cheat
  triggers split locks and the kernel's default penalty causes periodic
  stutter. It also loads the ntsync module at boot (/usr/lib/modules-load.d).
+ .
+ Where AppArmor restricts unprivileged user namespaces, it also installs
+ /etc/apparmor.d/maple-cask, which lets only
+ /usr/share/maple-cask/tools/maple-timens create one (programs it starts
+ do not inherit this). It is used only to start a time namespace: the game
+ hangs at character select once the system has been up for 24.8 days.

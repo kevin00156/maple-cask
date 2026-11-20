@@ -1,0 +1,13 @@
+# maple-cask:允許 maple-timens 建 user namespace。Ubuntu 23.10 起預設不准一般程式建
+# (kernel.apparmor_restrict_unprivileged_userns=1),寫法跟系統附的 /etc/apparmor.d/steam 一樣。
+# 只拿來開 time namespace,讓 wine 看到的開機時間從 0 開始:開機超過 24.8 天遊戲會卡「伺服器連線中」(MC-27)。
+# 沒有這份規則,遊戲照樣能開,只是那個情況要重開機。
+
+abi <abi/4.0>,
+include <tunables/global>
+
+profile maple-cask-timens /usr/share/maple-cask/tools/maple-timens flags=(unconfined) {
+  userns,
+
+  include if exists <local/maple-cask-timens>
+}

@@ -36,5 +36,8 @@ GS_ARGS=${GS_ARGS:-$(game_size)}
 echo "gamescope $GS_ARGS"
 export MAPLE_LOG=${MAPLE_LOG:-$HOME/.cache/maplestory-tw/gs-$(date +%m%d-%H%M%S).log}
 echo "log → $MAPLE_LOG"
+HERE=$(dirname "$(readlink -f "$0")")
+# maple-timens:wine 看到的開機時間從 0 開始,開機超過 24.8 天才不會卡「伺服器連線中」(MC-27)。
+# 只包 run.sh 不包 gamescope:時間只有 wine 需要動,gamescope 留在外面
 # shellcheck disable=SC2086  # GS_ARGS 是多個參數,要靠字詞分割拆開
-exec gamescope $GS_ARGS -- "$(dirname "$(readlink -f "$0")")/../run.sh"
+exec gamescope $GS_ARGS -- "$HERE/maple-timens" "$HERE/../run.sh"
