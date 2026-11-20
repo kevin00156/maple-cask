@@ -25,6 +25,34 @@ exec > >(tee -a "$MAPLE_LOG") 2>&1
 # setup 沒跑完的 prefix,遊戲只會留一行 "dxgi.dll ... not found" 就退出。maple 開遊戲前也查,這裡顧直接跑 gs-run.sh / Lutris 的人
 "$REPO/prefix/setup-prefix.sh" --check
 
+# 手把:wine 的 winebus 直接開 /dev 的手把(SDL / hidraw / evdev),不經過 gamescope,
+# 視窗沒 focus 也照收 → 搖桿在背景讓角色亂動;主機板 RGB 之類的 HID 也會被當成搖桿、卡著「上」。
+# 所以預設把三個後端全關,MAPLE_GAMEPAD=1 才開(docs/known-issues.md「手把預設關閉」)。
+# winebus 只在 wineserver 起來時讀一次設定:值有變才寫,寫完等這個 prefix 的 wine 全退,下面的遊戲才會用到新值。
+gamepad_set() {   # 印出 system.reg 裡 winebus 段落目前的三個值
+    awk '/^\[/{s=index($0,"[System\\\\ControlSet001\\\\Services\\\\winebus]")==1}
+         s&&/^"(Enable SDL|DisableHidraw|DisableInput)"=/' "$WINEPREFIX/system.reg" | sort
+}
+if [ "${MAPLE_GAMEPAD:-0}" = 1 ]; then on=1 off=0; else on=0 off=1; fi
+want=$(printf '"DisableHidraw"=dword:0000000%s\n"DisableInput"=dword:0000000%s\n"Enable SDL"=dword:0000000%s\n' $off $off $on)
+ws_alive() {      # 這個 prefix 的 wineserver 還在 → system.reg 可能沒寫回、新值也要等它重啟才生效
+    for p in $(pgrep -x wineserver); do
+        tr '\0' '\n' <"/proc/$p/environ" 2>/dev/null | grep -qxF "WINEPREFIX=$WINEPREFIX" && return 0
+    done; return 1
+}
+if [ "$(gamepad_set)" != "$want" ]; then
+    if ws_alive; then
+        echo "提示:這個 prefix 的 wineserver 還在,手把設定(MAPLE_GAMEPAD)這次不套用,關掉遊戲再開" >&2
+    else
+        k='HKLM\System\CurrentControlSet\Services\winebus'
+        for kv in "Enable SDL=$on" "DisableHidraw=$off" "DisableInput=$off"; do
+            "$WINE_ROOT/bin/wine" reg add "$k" /v "${kv%=*}" /t REG_DWORD /d "${kv#*=}" /f >/dev/null || true
+        done
+        "$WINE_ROOT/bin/wineserver" -w || true
+        [ $on = 1 ] || echo "提示:遊戲裡的手把已關閉(背景搖桿會讓角色亂動);要用手把在 env.sh 設 export MAPLE_GAMEPAD=1" >&2
+    fi
+fi
+
 # gamescope 的巢狀 Xwayland 上沒有 XIM server(fcitx5 只註冊在 KWin 的那個 display),中文輸入法會完全沒反應。
 # 請 fcitx5 多接這個 display;wine 只在視窗拿到焦點時建 XIC,所以必須在 wine 啟動前做。不走 gamescope 時已有 server,自動跳過。
 if ! xprop -root XIM_SERVERS 2>/dev/null | grep -q '@server='; then
