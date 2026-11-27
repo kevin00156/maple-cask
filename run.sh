@@ -6,18 +6,21 @@
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=tools/maple-lib.sh
+source "$REPO/tools/maple-lib.sh"
 : "${WINE_ROOT:?請設定 WINE_ROOT}" "${WINEPREFIX:?請設定 WINEPREFIX}" "${GAME_DIR:?請設定 GAME_DIR}"
 export WINEPREFIX WINEARCH=win64
 export LANG=zh_TW.UTF-8 LC_ALL=zh_TW.UTF-8
 export WINEDEBUG="${WINEDEBUG:-fixme-all,err+all}"
-export WINEDLLOVERRIDES="mscoree,mshtml=;d3d11,d3d10core,dxgi,d3d9,d3d12,d3d12core=n"
+dlls="${DXVK[*]} ${VKD3D[*]}"
+export WINEDLLOVERRIDES="mscoree,mshtml=;${dlls// /,}=n"   # setup-prefix.sh 放進去的那幾個一律用 native
 export DXVK_CONFIG_FILE="${DXVK_CONFIG_FILE:-$REPO/dxvk.conf}"
 
 cd "$GAME_DIR"
 
 # 遊戲死掉時 wine 的 err: 行是唯一的死因線索,而它只出現在終端機 ——
 # 2026-09-15 就因為沒存檔,一次當機的錯誤訊息只剩使用者的 scrollback。
-MAPLE_LOG=${MAPLE_LOG:-$HOME/.cache/maplestory-tw/run-$(date +%m%d-%H%M%S).log}
+MAPLE_LOG=${MAPLE_LOG:-$CACHE/run-$(date +%m%d-%H%M%S).log}
 mkdir -p "$(dirname "$MAPLE_LOG")"
 echo "log:$MAPLE_LOG"
 exec > >(tee -a "$MAPLE_LOG") 2>&1
@@ -35,13 +38,9 @@ gamepad_set() {   # 印出 system.reg 裡 winebus 段落目前的三個值
 }
 if [ "${MAPLE_GAMEPAD:-0}" = 1 ]; then on=1 off=0; else on=0 off=1; fi
 want=$(printf '"DisableHidraw"=dword:0000000%s\n"DisableInput"=dword:0000000%s\n"Enable SDL"=dword:0000000%s\n' $off $off $on)
-ws_alive() {      # 這個 prefix 的 wineserver 還在 → system.reg 可能沒寫回、新值也要等它重啟才生效
-    for p in $(pgrep -x wineserver); do
-        tr '\0' '\n' <"/proc/$p/environ" 2>/dev/null | grep -qxF "WINEPREFIX=$WINEPREFIX" && return 0
-    done; return 1
-}
 if [ "$(gamepad_set)" != "$want" ]; then
-    if ws_alive; then
+    # 這個 prefix 的 wineserver 還在 → system.reg 可能沒寫回、新值也要等它重啟才生效
+    if prefix_has "$WINEPREFIX" -x wineserver; then
         echo "提示:這個 prefix 的 wineserver 還在,手把設定(MAPLE_GAMEPAD)這次不套用,關掉遊戲再開" >&2
     else
         k='HKLM\System\CurrentControlSet\Services\winebus'

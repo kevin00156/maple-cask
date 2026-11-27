@@ -14,6 +14,7 @@ class MapleQrWrapperTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             tools = Path(directory)
             shutil.copyfile(source, tools / "maple")
+            shutil.copyfile(source.with_name("maple-lib.sh"), tools / "maple-lib.sh")  # maple source 它
             stub = tools / "maple-login"
             stub.write_text(
                 "#!/usr/bin/env python3\n"

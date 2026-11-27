@@ -11,10 +11,9 @@
 set -euo pipefail
 HERE=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 REPO=$(dirname "$HERE")
-CFG=${XDG_CONFIG_HOME:-$HOME/.config}/maplestory-tw
+# shellcheck source=tools/maple-lib.sh
+source "$HERE/maple-lib.sh"
 MAIN_ENV=${MAPLE_ENV:-$CFG/env.sh}
-DATA=${MAPLE_DATA:-${XDG_DATA_HOME:-$HOME/.local/share}/maplestory-tw}
-CACHE=${XDG_CACHE_HOME:-$HOME/.cache}/maplestory-tw
 RUNTIME=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/maplestory-tw
 SESSION=${MAPLE_SESSION_FILE:-$RUNTIME/session.json}
 
