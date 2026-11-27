@@ -20,7 +20,8 @@ maple -2            # 開第 2 組並登入;maple -2 stop / status / login … �
 `-2` ~ `-9` 都可以。`setup` 做的事:
 - 從主設定的遊戲目錄分出一份到 `~/.local/share/maplestory-tw/instances/N/game`:`Data/`(68GB,執行時不會被寫)用
   hardlink 不佔空間,其餘約 600MB 真的複製(BlackCipher 的 log 寫在遊戲目錄裡,兩組共用會互搶)。截圖不帶。
-  hardlink 需要跟主遊戲目錄在同一個檔案系統;不同的話把 `MAPLE_DATA` 設到同一顆碟上。
+  hardlink 需要跟主遊戲目錄在同一個檔案系統;不同的話把 `MAPLE_DATA` 設到同一顆碟上(設在登入環境;已經裝好的,
+  `env.sh` 的 `WINE_ROOT` / `WINEPREFIX` 也要改過去、舊的 `runners/`、`prefix/` 搬過去,對不上 `maple update` 會擋下來說)。
 - 寫 `~/.config/maplestory-tw/env-N.sh`(沿用主設定,只換 `WINEPREFIX` 與 `GAME_DIR`),跑 `setup-prefix.sh` 建全新 prefix。
 
 隔離:prefix 不同 = wineserver 不同,兩組互相看不到對方的行程與 mutex;`maple -N` 只看、只關自己那組的行程;

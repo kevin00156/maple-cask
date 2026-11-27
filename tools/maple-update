@@ -111,6 +111,17 @@ runner_why() {
         echo "WINE_ROOT=$root 由你自己管(要交給 maple update 就改成 $RUNNERS/current)"
 }
 
+# WINE_ROOT 長得像 maple update 管的 runner(…/runners/current)卻不是 $RUNNERS/current:MAPLE_DATA / XDG_DATA_HOME
+# 跟 env.sh 寫的對不上(例如裝好之後才設 MAPLE_DATA)。不擋的話 runner_why 會當成「自己管」,runner 從此靜默不更新。
+# 對得上就什麼都不印
+mismatch() {
+    local root
+    root=$(envvar "$MAIN_ENV" WINE_ROOT)
+    [[ $root == */runners/current ]] && [ "$(readlink -m "$root")" != "$(readlink -m "$RUNNERS/current")" ] || return 0
+    echo "env.sh 的 WINE_ROOT=$root,但 maple update 管的 runner 在 $RUNNERS/current(MAPLE_DATA / XDG_DATA_HOME 跟 $MAIN_ENV 對不上)。"
+    echo "  二選一:把 $MAIN_ENV 的 WINE_ROOT / WINEPREFIX 改到 $DATA 底下(舊目錄的 runners/、prefix/ 搬過去),或拿掉 MAPLE_DATA / XDG_DATA_HOME"
+}
+
 # 下載、校驗、解到 runners/$1。來源依序是鏡像、GitHub;校驗碼只信 GitHub 的 SHA256SUMS,
 # 鏡像不通或內容不符就換下一個來源。先解進 .tmp 再改名:中途失敗不會留下半套 runner
 install_runner() {
@@ -173,7 +184,10 @@ refresh_prefixes() {
 synced_check() {
     local ver
     ver=$(version)
-    [ -n "$ver" ] && [ "$(synced)" != "$ver" ] && [ -f "$MAIN_ENV" ] || return 0     # 沒設定檔:判斷不了 runner 歸誰管
+    [ -f "$MAIN_ENV" ] || return 0     # 沒設定檔:判斷不了 runner 歸誰管
+    # 對不上只警告、照開:舊 runner 還在原位能玩,擋下來反而開不了遊戲;maple update 才擋
+    [ -z "$(mismatch)" ] || { echo "⚠ env.sh 的 WINE_ROOT 不在資料目錄 $DATA 底下,runner 不會更新;maple update 會說怎麼改" >&2; return 0; }
+    [ -n "$ver" ] && [ "$(synced)" != "$ver" ] || return 0
     if [ ! -f "$SYNCED" ]; then
         if [ -n "$(runner_why)" ] || [ -e "$RUNNERS/current" ]; then mark_synced "$ver"; return 0; fi
         echo "第一次使用:下載 $ver 的 wine runner 並建 prefix"
@@ -252,6 +266,9 @@ sync_to() {
 # update / sync 共同的前置:要有設定檔、拿到鎖、沒有遊戲在跑
 prepare() {
     [ -f "$MAIN_ENV" ] || die "沒有 $MAIN_ENV:先跑 maple(會問遊戲目錄並產生設定檔),或從 env.example 複製過去填好"
+    local why
+    why=$(mismatch)
+    [ -z "$why" ] || die "$why"
     lock
     if busy; then die "遊戲或 wineserver 還在跑,先 maple stop(多開的每一組都要)"; fi
 }
