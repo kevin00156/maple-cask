@@ -893,16 +893,31 @@ def systemd_unit_dir() -> str:
     return os.path.join(base, "systemd", "user")
 
 
-def systemctl(*args: str) -> bool:
-    """跑 systemctl --user。成功回 True;沒有 systemd 或失敗都回 False,不拋例外。"""
+def systemctl_out(*args: str) -> str | None:
+    """跑 systemctl --user,回 stdout。沒有 systemd 或失敗都回 None,不拋例外。"""
     if not shutil.which("systemctl"):
-        return False
+        return None
     try:
         r = subprocess.run(["systemctl", "--user", *args],
                            capture_output=True, text=True, timeout=15)
-        return r.returncode == 0
     except (OSError, subprocess.SubprocessError):
-        return False
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+
+def systemctl(*args: str) -> bool:
+    """跑 systemctl --user。成功回 True;沒有 systemd 或失敗都回 False。"""
+    return systemctl_out(*args) is not None
+
+
+def keepalive_exec() -> str:
+    """unit 的 ExecStart 行。
+
+    寫明直譯器,不靠 shebang:systemd user 的 PATH 只有系統 python3,requests 裝在
+    venv/conda 的人走 /usr/bin/env python3 會每 10 分鐘 import 失敗。用跑這次的直譯器,
+    它剛剛才證明 import 得起來。
+    """
+    return f"ExecStart={sys.executable or '/usr/bin/python3'} {os.path.abspath(__file__)} keepalive\n"
 
 
 def notify(title: str, body: str) -> None:
@@ -920,7 +935,6 @@ def keepalive_install() -> bool:
     """寫 unit 檔並啟動 timer。裝起來回 True,沒有 systemd 回 False。"""
     if not shutil.which("systemctl"):
         return False
-    me = os.path.abspath(__file__)
     d = systemd_unit_dir()
     os.makedirs(d, exist_ok=True)
     # session 路徑若被 MAPLE_SESSION_FILE 覆寫,要帶進 unit —— systemd 看不到你 shell 的環境
@@ -933,7 +947,7 @@ def keepalive_install() -> bool:
             "\n[Service]\n"
             "Type=oneshot\n"
             f"{env}"
-            f"ExecStart={me} keepalive\n"
+            + keepalive_exec()
         )
     with open(os.path.join(d, UNIT + ".timer"), "w") as f:
         f.write(
@@ -959,14 +973,14 @@ def keepalive_ensure() -> None:
     """
     d = systemd_unit_dir()
     if os.path.exists(os.path.join(d, UNIT + ".timer")):
-        # 裝過了,但 unit 裡寫死的是「當時那份」maple-login 的路徑 —— repo 搬家或換一份 clone 之後
-        # 它會一直跑舊路徑,舊的刪掉那天保活就默默失效。不是指向自己就重裝。
+        # 裝過了,但 unit 裡寫死的是「當時那份」maple-login 和直譯器的路徑 —— repo 搬家、換一份
+        # clone 或換了 venv 之後它會一直跑舊的,舊的刪掉那天保活就默默失效。不是指向自己就重裝。
         try:
             with open(os.path.join(d, UNIT + ".service")) as f:
                 current = f.read()
         except OSError:
             current = ""
-        if f"ExecStart={os.path.abspath(__file__)} keepalive\n" in current:
+        if keepalive_exec() in current:
             return
         if keepalive_install():
             print(f"保活改由這份 maple-login 執行:{os.path.abspath(__file__)}")
@@ -994,9 +1008,17 @@ def keepalive_state() -> str:
         return "沒有 systemd,保活沒裝"
     if not os.path.exists(os.path.join(systemd_unit_dir(), UNIT + ".timer")):
         return "保活沒裝(跑一次 tools/maple-login 就會自動裝)"
-    if systemctl("is-active", "--quiet", UNIT + ".timer"):
-        return f"保活跑著,每 {KEEPALIVE_MINUTES} 分鐘戳一次"
-    return "保活裝了但沒在跑(systemctl --user start %s.timer)" % UNIT
+    if not systemctl("is-active", "--quiet", UNIT + ".timer"):
+        return "保活裝了但沒在跑(systemctl --user start %s.timer)" % UNIT
+    # timer 在跑不代表戳成功:service 每次都失敗的話 session 照樣過期。看上一次的結果。
+    # 還沒跑過時 Result=success、ExecMainStatus=0,不會誤報。
+    out = systemctl_out("show", "-p", "Result,ExecMainStatus", UNIT + ".service") or ""
+    props = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+    if props.get("Result", "success") != "success":
+        return (f"保活的 timer 在跑,但上一次戳失敗了(Result={props['Result']},"
+                f"ExecMainStatus={props.get('ExecMainStatus', '?')});"
+                f"看 journalctl --user -u {UNIT}")
+    return f"保活跑著,每 {KEEPALIVE_MINUTES} 分鐘戳一次"
 
 
 # -----------------------------------------------------------------------------
