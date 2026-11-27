@@ -409,6 +409,41 @@ echo 'kernel.split_lock_mitigate = 0' | sudo tee /etc/sysctl.d/99-split-lock.con
 - 建不了 namespace(git clone 直接跑、AppArmor 規則沒載入、kernel < 5.6)就照原樣啟動,遊戲照樣能玩;開機超過 23.8 天時 `run.sh` 會警告,重開機就好。
 - 加入既有的 namespace 不需要 AppArmor 放行,任何同一個使用者的行程都能做。
 
+## VRAM:一個 client 約 1.6-2 GB;顯卡小又要同時跑別的遊戲,可以限制在 1 GB(選用,2026-11-15,MC-28)
+
+楓之谷畫面走 **D3D11**(DXVK log 只有 `D3D11InternalCreateDevice`,沒建任何 D3D9 裝置),所以網路上常見的
+`d3d9.*` 設定(`d3d9.textureMemory` 只對 32 位元有效、`d3d9.maxAvailableMemory` 只改回報值)都沒作用。
+
+實測(i7-14700F、RTX 3070 Ti 8 GB、NVIDIA 595.99.02、DXVK 3.1,1920×1080,開遊戲約 2 分鐘後讀 `dxvk.hud = memory` 與 `nvidia-smi`):
+
+| 設定 | nvidia-smi | DXVK 配置 / 實際使用 | 搬到系統記憶體 |
+|---|---|---|---|
+| 預設 | 1594 MiB(連換多張地圖後 1982) | 1517 / 1259 MB | 0 |
+| `dxgi.maxDeviceMemory = 2048` | 1420 MiB | 1341 / 1214 MB | 0 |
+| `dxvk.maxMemoryBudget = 1024` | 1146 MiB | 1069 / 1068 MB | 671 MB |
+
+- 畫面緩衝(1920×1080 × 4 張)約 33 MB、gamescope 約 50 MiB、NxOverlay 約 35 MiB,幾乎全部都是遊戲自己載的貼圖。
+- 換地圖會往上加幾百 MB,之後會回落,沒有一直漲。
+- `dxgi.maxDeviceMemory`(騙遊戲顯卡比較小)**沒效**:遊戲不看這個數字決定要載多少。
+- `dxvk.maxMemoryBudget` 是硬上限,超出的貼圖由 DXVK 搬到系統記憶體。楓之谷是 2D、GPU 很閒(實測 12-34% 使用率),
+  所以**幀率感覺不出差別**,只有過圖偶爾慢一點。連用兩週沒有問題。
+
+**什麼時候值得開**:8 GB 以下的獨立顯卡,又會跟別的 3D 遊戲(或 AI 繪圖之類吃 VRAM 的程式)同時跑。
+實測上 VRAM 滿的時候 NVIDIA 驅動(595.99)會讓之後的配置直接失敗(`vkAllocateMemory` 回 `VK_ERROR_OUT_OF_DEVICE_MEMORY`、
+dmesg 出現 `Failed to allocate NVKMS memory`),不像 Windows 那樣換頁到系統記憶體;
+gamescope 遇到配置失敗會直接 abort,遊戲跟著被關掉(MC-26)。這個上限只管遊戲裡的 DXVK,管不到 gamescope 自己。
+
+**怎麼開**:`~/.config/maplestory-tw/env.sh` 加一行,下次開遊戲生效:
+```bash
+export DXVK_CONFIG="dxvk.maxMemoryBudget = 1024"
+```
+(要看實際用量就改成 `"dxvk.maxMemoryBudget = 1024; dxvk.hud = memory"`,畫面左上角會顯示。)
+
+**為什麼不是預設**:DXVK 文件把這個選項標成除錯用,警告「效能會嚴重下降」。2D 的楓之谷剛好不受影響,
+但 VRAM 夠大的人只會白白多一點過圖延遲,系統記憶體少的機器還要多吃幾百 MB RAM(遊戲本身已經吃 7 GB 左右)。
+AMD / Intel 獨顯沒測過;內顯(包括 Steam Deck)上 DXVK 不執行這個限制,設了也沒差別。
+不設的話,DXVK 也會在驅動回報的預算不夠時自己把少用的貼圖搬出去,只是要等到超過預算才動作。
+
 ## 取得帳號 sid 與 OTP
 遊戲登入表單的「帳號」要填 beanfun 的遊戲帳號 **sid**(`T9…` 那串),不是帳號名稱。
 用 `tools/maple-login`:session 失效會自動帶你掃 QR,列出所有帳號與 sid,鑄一張新的 OTP,
