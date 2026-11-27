@@ -18,8 +18,8 @@ set -euo pipefail
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 SYS32=${WINEPREFIX:-}/drive_c/windows/system32
 WOW64=${WINEPREFIX:-}/drive_c/windows/syswow64
-DXVK=(d3d11 d3d10core dxgi d3d9)    # 64 與 32 位元都要(NGS 那側是 32 位元);run.sh 的 WINEDLLOVERRIDES 要跟著改
-VKD3D=(d3d12 d3d12core)             # 只有 64 位元
+# shellcheck source=tools/maple-lib.sh
+source "$REPO/tools/maple-lib.sh"   # DXVK / VKD3D 兩份 dll 清單
 
 # 不是 wine 自己的 dll。setup 沒跑完的 prefix 裡,system32 的 d3d/dxgi 是 wine builtin 版(檔頭有這個標記);
 # run.sh 強制這幾個 =n,遇到它就是 "dxgi.dll ... not found"

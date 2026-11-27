@@ -12,18 +12,19 @@
 #   要自己指定:GS_ARGS="-W 1366 -H 768 -f" tools/gs-run.sh
 #   要用自建的 gamescope(中文輸入法候選窗,patches/gamescope-0001),把它的 bin/ 放進 PATH 最前面即可(env.sh 裡設)。
 set -euo pipefail
+HERE=$(dirname "$(readlink -f "$0")")
+# shellcheck source=tools/maple-lib.sh
+source "$HERE/maple-lib.sh"
 if [ -z "${WINE_ROOT:-}" ]; then
     # shellcheck source=/dev/null  # 使用者自己的設定檔,不在 repo 裡
-    source "${MAPLE_ENV:-${XDG_CONFIG_HOME:-$HOME/.config}/maplestory-tw/env.sh}"
+    source "${MAPLE_ENV:-$CFG/env.sh}"
 fi
 : "${WINE_ROOT:?請設定 WINE_ROOT(見 env.example)}" "${WINEPREFIX:?請設定 WINEPREFIX}"
 command -v gamescope >/dev/null || { echo "找不到 gamescope(Ubuntu/Debian:sudo apt install gamescope)" >&2; exit 1; }
 # 只看「這個 prefix」的 wineserver:多開時別的實例(別的 prefix)在跑不相干
-for p in $(pgrep -x wineserver); do
-    if tr '\0' '\n' <"/proc/$p/environ" 2>/dev/null | grep -qxF "WINEPREFIX=$WINEPREFIX"; then
-        echo "這個 prefix 的 wineserver 還活著;先關遊戲,再 WINEPREFIX=$WINEPREFIX \"$WINE_ROOT/bin/wineserver\" -k,不然 explorer 的 desktop 留在桌面的 display" >&2; exit 2
-    fi
-done
+if prefix_has "$WINEPREFIX" -x wineserver; then
+    echo "這個 prefix 的 wineserver 還活著;先關遊戲,再 WINEPREFIX=$WINEPREFIX \"$WINE_ROOT/bin/wineserver\" -k,不然 explorer 的 desktop 留在桌面的 display" >&2; exit 2
+fi
 # 遊戲把畫面設定存在 HKLM\Software\Wow6432Node\Wizet\MapleStory;soScreenMode 1 = 視窗
 game_size() {
     local reg=$WINEPREFIX/system.reg w h
@@ -34,9 +35,8 @@ game_size() {
 }
 GS_ARGS=${GS_ARGS:-$(game_size)}
 echo "gamescope $GS_ARGS"
-export MAPLE_LOG=${MAPLE_LOG:-$HOME/.cache/maplestory-tw/gs-$(date +%m%d-%H%M%S).log}
+export MAPLE_LOG=${MAPLE_LOG:-$CACHE/gs-$(date +%m%d-%H%M%S).log}
 echo "log → $MAPLE_LOG"
-HERE=$(dirname "$(readlink -f "$0")")
 # maple-timens:wine 看到的開機時間從 0 開始,開機超過 24.8 天才不會卡「伺服器連線中」(MC-27)。
 # 只包 run.sh 不包 gamescope:時間只有 wine 需要動,gamescope 留在外面
 # shellcheck disable=SC2086  # GS_ARGS 是多個參數,要靠字詞分割拆開

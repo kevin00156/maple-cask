@@ -21,12 +21,11 @@
 set -euo pipefail
 HERE=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 REPO=$(dirname "$HERE")
-CFG=${XDG_CONFIG_HOME:-$HOME/.config}/maplestory-tw
+# shellcheck source=tools/maple-lib.sh
+source "$HERE/maple-lib.sh"
 MAIN_ENV=${MAPLE_ENV:-$CFG/env.sh}
-DATA=${MAPLE_DATA:-${XDG_DATA_HOME:-$HOME/.local/share}/maplestory-tw}
 RUNNERS=$DATA/runners
 SYNCED=$DATA/synced-version
-CACHE=${XDG_CACHE_HOME:-$HOME/.cache}/maplestory-tw
 STAMP=$CACHE/update-check
 DEFAULT_SLUG=kevin00156/maple-cask
 # runner 的鏡像(Cloudflare R2,CI 發版時跟 Release 放同一份)。GitHub Release 的 CDN 在台灣常只有幾十 KB/s。
@@ -68,13 +67,10 @@ envvar() { env -u WINE_ROOT -u WINEPREFIX -u GAME_DIR bash -c 'source "$1" >/dev
 
 # 有行程在用 runners/ 裡的 wine,或任何一組的 wineserver 還活著
 busy() {
-    local f pfx p
+    local f
     pgrep -f "$RUNNERS/" >/dev/null && return 0
     for f in $(envs); do
-        pfx=$(envvar "$f" WINEPREFIX)
-        for p in $(pgrep -x wineserver); do
-            tr '\0' '\n' <"/proc/$p/environ" 2>/dev/null | grep -qxF "WINEPREFIX=$pfx" && return 0
-        done
+        prefix_has "$(envvar "$f" WINEPREFIX)" -x wineserver && return 0
     done
     return 1
 }

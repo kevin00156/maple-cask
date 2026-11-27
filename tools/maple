@@ -33,7 +33,8 @@
 set -euo pipefail
 HERE=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)     # 經 ~/.local/bin 的 symlink 也找得到 repo
 REPO=$(dirname "$HERE")
-CFG=${XDG_CONFIG_HOME:-$HOME/.config}/maplestory-tw
+# shellcheck source=tools/maple-lib.sh
+source "$HERE/maple-lib.sh"
 
 # 套件安裝:整份腳本在唯讀的 /usr/share/maple-cask,install.sh 在裡面放了 VERSION(git clone 沒有這個檔)
 packaged() { [ -f "$REPO/VERSION" ]; }
@@ -101,7 +102,7 @@ case ${1:-} in -h|--help|help) awk 'NR>1 && /^#/ {sub(/^# ?/, ""); print; next} 
 # 2. 開遊戲前問要不要先 maple update。update 會 git 快轉換掉這支檔案,bash 不能接著讀 → 更新完 exec 從頭重跑。
 #    套件安裝的新版交給 apt / pacman,不問
 offer_update() {
-    local msg ans declined=${XDG_CACHE_HOME:-$HOME/.cache}/maplestory-tw/update-declined
+    local msg ans declined=$CACHE/update-declined
     [ -z "${MAPLE_OFFERED:-}" ] && ! packaged || return 0
     msg=$("$HERE/maple-update" --check 2>/dev/null) || return 0      # 沒網路就安靜跳過
     [ -n "$msg" ] || return 0
@@ -146,7 +147,7 @@ setup_instance() {
     local n=$1 envf=$CFG/env-$1.sh main=${MAPLE_ENV:-$CFG/env.sh} data
     # shellcheck source=/dev/null  # 使用者自己的設定檔,不在 repo 裡
     source "$main"
-    data=${MAPLE_DATA:-${XDG_DATA_HOME:-$HOME/.local/share}/maplestory-tw}/instances/$n
+    data=$DATA/instances/$n
     [ -e "$data/game" ] && { echo "$data/game 已經存在;要重建先刪它" >&2; return 1; }
     # 新 prefix 一定要 zh_TW locale:分遊戲目錄(約 600MB)之前就先擋
     (unset WINEPREFIX; "$HERE/../prefix/setup-prefix.sh" --locale) || return 1
@@ -182,15 +183,8 @@ fi
 : "${WINE_ROOT:?}" "${WINEPREFIX:?}" "${GAME_DIR:?}"
 
 # 只算「這個 prefix」的行程(看 /proc/<pid>/environ):多開時每個實例一份 env.sh,互不干擾
-ours() {
-    local p
-    for p in $(pgrep "$@"); do
-        tr '\0' '\n' <"/proc/$p/environ" 2>/dev/null | grep -qxF "WINEPREFIX=$WINEPREFIX" && return 0
-    done
-    return 1
-}
-game_running() { ours -f 'MapleStory\.exe'; }
-ws_running()   { ours -x wineserver; }
+game_running() { prefix_has "$WINEPREFIX" -f 'MapleStory\.exe'; }
+ws_running()   { prefix_has "$WINEPREFIX" -x wineserver; }
 
 
 # 5. 沒有遊戲:問要不要下載。只有主設定會問(maple install 下載到主設定的 GAME_DIR;多開組是從主目錄分出來的)
@@ -226,7 +220,7 @@ cmd_game() {
         "$HERE/kill-prefix.sh"
     fi
     local log
-    log=$HOME/.cache/maplestory-tw/gs${MAPLE_INSTANCE:+-$MAPLE_INSTANCE}-$(date +%m%d-%H%M%S).log
+    log=$CACHE/gs${MAPLE_INSTANCE:+-$MAPLE_INSTANCE}-$(date +%m%d-%H%M%S).log
     mkdir -p "$(dirname "$log")"
     MAPLE_LOG=$log setsid -f "$HERE/gs-run.sh" >>"$log" 2>&1     # setsid:Ctrl-C 這個終端機不會連遊戲一起殺
     echo "遊戲啟動中(gamescope)。log → $log"
